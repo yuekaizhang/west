@@ -1,3 +1,9 @@
+"""Decode script for GRPO-trained models using vLLM.
+
+This script runs inference on the MMAU audio understanding benchmark using
+Qwen2-Audio models with vLLM for efficient batch processing.
+"""
+
 import argparse
 import json
 import logging
@@ -7,6 +13,18 @@ import re
 import torchaudio
 from tqdm import tqdm
 from vllm import LLM, SamplingParams
+
+
+def extract_answer(output_str: str) -> str:
+    """Extract content from <answer> tags in the model output."""
+    match = re.search(r"<answer>(.*?)</answer>", output_str, re.DOTALL)
+    return match.group(1) if match else ""
+
+
+def extract_think(output_str: str) -> str:
+    """Extract content from <think> tags in the model output."""
+    match = re.search(r"<think>(.*?)</think>", output_str, re.DOTALL)
+    return match.group(1) if match else ""
 
 
 def parse_args():
@@ -97,9 +115,6 @@ def main():
                 "multi_modal_data": {"audio": [audio_data]}
             })
 
-            # print(audio_data[0].shape)
-            # print(bd["audio_id"])
-
         outputs = llm.generate(batch_inputs, sampling_params=sampling_params)
 
         for output in outputs:
@@ -108,20 +123,6 @@ def main():
             print(generated_text)
 
         print(f"Processed batch {i//batch_size + 1}/{(len(datas) + batch_size - 1)//batch_size}")
-
-    def extract_answer(output_str):
-        answer_pattern = r"<answer>(.*?)</answer>"
-        match = re.search(answer_pattern, output_str, re.DOTALL)
-        if match:
-            return match.group(1)
-        return ""
-
-    def extract_think(output_str):
-        think_pattern = r"<think>(.*?)</think>"
-        match = re.search(think_pattern, output_str, re.DOTALL)
-        if match:
-            return match.group(1)
-        return ""
 
     final_output = []
     for input_example, model_output in zip(datas, all_outputs):

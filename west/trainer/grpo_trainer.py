@@ -286,7 +286,6 @@ class GRPOTrainer(Trainer):
         # Extract meta_data for reward computation
         meta_data = inputs.pop("meta_data")
 
-
         # Step 1: Generate completions
         generated_strs, generated_ids, generated_mask = self._rollout(model, inputs)
 

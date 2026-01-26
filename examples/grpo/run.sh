@@ -1,34 +1,58 @@
 #!/bin/bash
-# gijs/avqa-processed
+
 export PYTHONPATH=/workspace_yuekai/asr/wenet:$PYTHONPATH
-PROJECT_DIR=$(pwd)/../../
-[ ! -s west ] && ln -s $PROJECT_DIR/west
-[ ! -s tools ] && ln -s $PROJECT_DIR/tools
+
+project_dir=$(pwd)/../../
+[ ! -s west ] && ln -s $project_dir/west
+[ ! -s tools ] && ln -s $project_dir/tools
 export PYTHONPATH=$PYTHONPATH:$PWD
 
+dir=exp/grpo
+model_name_or_path=/workspace_yuekai/HF/Qwen2-Audio-7B-Instruct
+hf_dataset_path=/workspace_yuekai/HF/avqa-processed
+num_gpus=$(echo $CUDA_VISIBLE_DEVICES | awk -F ',' '{print NF}')
 
-OUT_DIR=exp/grpo
-MODEL_NP=/workspace_yuekai/HF/Qwen2-Audio-7B-Instruct
-HF_DATASET_PATH=/workspace_yuekai/HF/avqa-processed
+stage=train
 
-# GPU_NUM=$(nvidia-smi -L | wc -l)
-GPU_NUM=8
-NODE_NUM=1
-NODE_RANK=0
-MASTER_ADDR="127.0.0.1"
-MASTER_PORT=32778
+. tools/parse_options.sh
 
-# export DEBUG_MODE=true
-# export LOG_PATH=grpo_hf.log
+if [ $stage == "data" ] || [ $stage == "all" ]; then
+    echo "Prepare required data"
+    # gijs/avqa-processed
+fi
 
-torchrun --nproc_per_node=${GPU_NUM} \
-    --nnodes=${NODE_NUM} \
-    --node-rank=${NODE_RANK} \
-    --master_addr=${MASTER_ADDR} \
-    --master_port=${MASTER_PORT} \
-    west/bin/train_grpo.py \
-    --config_path conf/ds_zero3.json \
-    --model_name_or_path ${MODEL_NP} \
-    --out_dir ${OUT_DIR} \
-    --hf_dataset_path ${HF_DATASET_PATH} \
-    --use_wandb false || exit 1
+if [ $stage == "train" ] || [ $stage == "all" ]; then
+    torchrun --nproc_per_node=${num_gpus} \
+        --nnodes=1 \
+        --node-rank=0 \
+        --master_addr=127.0.0.1 \
+        --master_port=32778 \
+        west/bin/train_grpo.py \
+        --config_path conf/ds_zero3.json \
+        --model_name_or_path ${model_name_or_path} \
+        --out_dir ${dir} \
+        --hf_dataset_path ${hf_dataset_path} \
+        --use_wandb false || exit 1
+fi
+
+if [ $stage == "decode" ] || [ $stage == "all" ]; then
+    mmau_dir=data/MMAU
+    iters=(100 200 300 400 500)
+    model_dir=${dir}
+    batch_size=32
+    for iter in ${iters[*]}; do
+        model_dir=${model_dir}/checkpoint-${iter}
+        out_dir=${model_dir}/test_${iter}_vllm
+
+        python3 west/bin/decode_grpo.py \
+        --model_path ${model_dir} \
+        --data_file ${mmau_dir}/mmau-test-mini.json \
+        --audio_dir ${mmau_dir} \
+        --out_file ${out_dir}/res_mmau_mini.json \
+        --batch_size ${batch_size} || exit 1
+        
+        python3 ${mmau_dir}/evaluation.py \
+        --input ${out_dir}/res_mmau_mini.json \
+        > ${dir}/eval_mmau_mini.txt || exit 1
+    done
+fi

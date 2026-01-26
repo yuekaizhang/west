@@ -1,3 +1,9 @@
+"""GRPO training script for Qwen2-Audio models.
+
+This script implements Group Relative Policy Optimization (GRPO) training
+for audio question answering tasks using Qwen2-Audio models.
+"""
+
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
@@ -8,13 +14,11 @@ from transformers import (
     HfArgumentParser,
     Qwen2AudioForConditionalGeneration,
 )
-from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
 from trl import GRPOConfig
-from trl.models import create_reference_model
 
+from west.dataset.hf_dataset import HFAudioDataset
 from west.trainer.grpo_trainer import GRPOTrainer
 from west.utils.rewards import accuracy_reward, format_reward
-from west.dataset.hf_dataset import HFAudioDataset
 
 
 @dataclass
@@ -62,11 +66,7 @@ def main():
 
     # ==================== Load Reference Model ====================
     logging.info("Creating reference model...")
-    # if is_deepspeed_zero3_enabled():
     ref_model = Qwen2AudioForConditionalGeneration.from_pretrained(args.model_name_or_path)
-    # else:
-    #     assert False, "DeepSpeed zero3 is not enabled"
-    #     ref_model = create_reference_model(model)
 
     # ==================== Load Processor ====================
     logging.info("Loading processor...")

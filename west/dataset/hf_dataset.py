@@ -136,7 +136,6 @@ class HFAudioDataset(Dataset):
         # Apply chat template to get text prompts
         prompts_text = [maybe_apply_chat_template(item, self.processor)["prompt"] for item in batch]
 
-
         # Process with processor (tokenization + audio features)
         processed = self.processor(
             text=prompts_text,
@@ -184,7 +183,6 @@ def _handle_hf_item_sft(item, sft_data_dict, sample_rate=16000):
     # Parse question and build prompt
     question, choices = _parse_hf_question(item['question'])
     question = question.replace('video', 'audio')
-    # question_template = f"{question} Please choose the answer from the following options: {choices}. Output the final answer in <answer> </answer>."
     question_template = f"{question} Please choose the answer from the following options: {choices}. Output the thinking process in <think> </think> and final answer in <answer> </answer>."
     # Get response from sft_data_dict
     sft_item = sft_data_dict.get(item['file_name'], {})
@@ -341,37 +339,39 @@ class SFTAudioDataset(Dataset):
 
 
 if __name__ == "__main__":
+    import argparse
     from transformers import AutoProcessor
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    HF_DATASET_PATH = "/workspace_yuekai/HF/avqa-processed"
-    MODEL_PATH = "/workspace_yuekai/HF/Qwen2-Audio-7B-Instruct"
-    SFT_JSON_PATH = "/workspace_yuekai/asr/r1-aqa/avqa_new.json"
+    parser = argparse.ArgumentParser(description="Test SFTAudioDataset")
+    parser.add_argument("--hf_dataset_path", type=str, required=True, help="Path to HF dataset")
+    parser.add_argument("--model_path", type=str, required=True, help="Path to model for processor")
+    parser.add_argument("--sft_json_path", type=str, required=True, help="Path to SFT JSON file")
+    args = parser.parse_args()
 
     print("=" * 60)
-    print("Counting SFTAudioDataset items")
+    print("Testing SFTAudioDataset")
     print("=" * 60)
 
     # Load JSON to count items
-    with open(SFT_JSON_PATH, 'r') as f:
+    with open(args.sft_json_path, 'r') as f:
         sft_json_data = json.load(f)
     print(f"SFT JSON file items: {len(sft_json_data)}")
 
     # Load processor
-    processor = AutoProcessor.from_pretrained(MODEL_PATH)
+    processor = AutoProcessor.from_pretrained(args.model_path)
 
     # Load HF dataset to count original items
-    from datasets import load_dataset
-    hf_dataset = load_dataset(HF_DATASET_PATH, split='train')
+    hf_dataset = load_dataset(args.hf_dataset_path, split='train')
     print(f"HF Dataset (train split) items: {len(hf_dataset)}")
 
     # Load SFT dataset with filtering
     sft_dataset = SFTAudioDataset(
-        HF_DATASET_PATH,
+        args.hf_dataset_path,
         processor=processor,
         split='train',
-        sft_json_path=SFT_JSON_PATH
+        sft_json_path=args.sft_json_path
     )
     print(f"SFT Dataset (filtered) items: {len(sft_dataset)}")
 
