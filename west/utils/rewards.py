@@ -1,7 +1,7 @@
 import re
 
 
-def accuracy_reward(completions, solution, **kwargs):
+def accuracy_reward(hypos_list, ground_truth_list, **kwargs):
     """Reward function that checks if the completion is correct using exact string matching.
 
     Args:
@@ -12,21 +12,16 @@ def accuracy_reward(completions, solution, **kwargs):
     Returns:
         List of float rewards (1.0 for correct, 0.0 for incorrect)
     """
-    predictions = [completion[0]["content"] for completion in completions]
     rewards = []
 
-    for prediction, ground_truth in zip(predictions, solution):
+    for prediction, ground_truth in zip(hypos_list, ground_truth_list):
         reward = 0.0
         try:
-            # Extract answer from ground truth if it has <answer> tags
-            gt_match = re.search(r"<answer>(.*?)</answer>", ground_truth)
-            gt_answer = gt_match.group(1).strip() if gt_match else ground_truth.strip()
-
             # Extract answer from prediction if it has <answer> tags
             pred_match = re.search(r"<answer>(.*?)</answer>", prediction)
             pred_answer = pred_match.group(1).strip() if pred_match else prediction.strip()
 
-            if pred_answer == gt_answer:
+            if pred_answer == ground_truth:
                 reward = 1.0
         except Exception:
             pass
@@ -36,7 +31,7 @@ def accuracy_reward(completions, solution, **kwargs):
     return rewards
 
 
-def format_reward(completions, **kwargs):
+def format_reward(hypos_list, **kwargs):
     """Reward function that checks if the completion has a specific format.
 
     Args:
@@ -47,22 +42,22 @@ def format_reward(completions, **kwargs):
         List of float rewards (1.0 if format matches, 0.0 otherwise)
     """
     pattern = r"<answer>.*?</answer>"
-    completion_contents = [completion[0]["content"] for completion in completions]
+    completion_contents = [hypo for hypo in hypos_list]
     matches = [re.fullmatch(pattern, content, re.DOTALL) for content in completion_contents]
     return [1.0 if match else 0.0 for match in matches]
 
 
 if __name__ == "__main__":
     # Test accuracy_reward
-    mock_completions = [[{"content": "<answer>D. on the tree</answer>"}]]
-    mock_solution = ["<answer>D. on the tree</answer>"]
+    mock_hypos_list = ["<answer>D. on the tree</answer>"]
+    mock_ground_truth_list = ["D. on the tree"]
 
     print("Testing accuracy_reward:")
-    print(f"  Prediction: {mock_completions[0][0]['content']}")
-    print(f"  Solution:   {mock_solution[0]}")
-    print(f"  Reward:     {accuracy_reward(mock_completions, mock_solution)[0]}")
+    print(f"  Prediction: {mock_hypos_list[0]}")
+    print(f"  Solution:   {mock_ground_truth_list[0]}")
+    print(f"  Reward:     {accuracy_reward(mock_hypos_list, mock_ground_truth_list)[0]}")
 
     # Test format_reward
     print("\nTesting format_reward:")
-    print(f"  Content: {mock_completions[0][0]['content']}")
-    print(f"  Reward:  {format_reward(mock_completions)[0]}")
+    print(f"  Content: {mock_hypos_list[0]}")
+    print(f"  Reward:  {format_reward(mock_hypos_list)[0]}")

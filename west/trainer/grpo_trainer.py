@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-GRPO Trainer for Qwen2-Audio models.
+GRPO Trainer for Qwen2-Audio, Qwen-omni models.
 
 Simplified implementation for Audio Question Answering with custom reward functions.
 Based on R1-V: https://github.com/Deep-Agent/R1-V
@@ -32,12 +32,11 @@ from transformers import (
     PreTrainedModel,
     ProcessorMixin,
     Trainer,
+    TrainingArguments,
 )
 
 from trl.models import prepare_deepspeed, unwrap_model_for_generation
-from trl.trainer.grpo_config import GRPOConfig
 from trl.trainer.utils import selective_log_softmax
-
 
 # Type alias for reward functions
 RewardFunc = Callable[[list, list], list[float]]
@@ -66,7 +65,7 @@ class GRPOTrainer(Trainer):
         ref_model: PreTrainedModel,
         processor: ProcessorMixin,
         reward_funcs: Union[RewardFunc, list[RewardFunc]],
-        args: GRPOConfig,
+        args: TrainingArguments,
         train_dataset: Optional[Union[Dataset, IterableDataset]] = None,
         eval_dataset: Optional[Union[Dataset, IterableDataset]] = None,
         data_collator: Optional[Callable] = None,
@@ -94,7 +93,7 @@ class GRPOTrainer(Trainer):
             max_new_tokens=args.max_completion_length,
             do_sample=True,
             temperature=args.temperature,
-            num_return_sequences=self.num_generations,
+            num_return_sequences=args.num_generations,
             pad_token_id=processor.tokenizer.pad_token_id,
         )
 
@@ -194,22 +193,15 @@ class GRPOTrainer(Trainer):
         Returns:
             rewards_per_func: Rewards from each reward function [num_samples, num_funcs]
         """
-        prompts, solutions = meta_data
-        device = self.accelerator.device
-
-        # Format completions as conversation
-        completions = [[{"role": "assistant", "content": s}] for s in generated_strs]
-
-        # Expand prompts and solutions to match generations
-        prompts_expanded = [p for p in prompts for _ in range(self.num_generations)]
+        solutions = meta_data[0]
         solutions_expanded = [s for s in solutions for _ in range(self.num_generations)]
 
-        rewards_per_func = torch.zeros(len(prompts_expanded), len(self.reward_funcs), device=device)
+        device = self.accelerator.device
+        rewards_per_func = torch.zeros(len(solutions_expanded), len(self.reward_funcs), device=device)
         for i, reward_func in enumerate(self.reward_funcs):
             rewards = reward_func(
-                prompts=prompts_expanded,
-                completions=completions,
-                solution=solutions_expanded,
+                hypos_list=generated_strs,
+                ground_truth_list=solutions_expanded,
             )
             rewards_per_func[:, i] = torch.tensor(rewards, dtype=torch.float32, device=device)
 

@@ -1,5 +1,5 @@
 soundfile==0.12.1
-transformers==4.49.0 # 4.55.2
+transformers
 peft==0.14.0
 deepspeed==0.16.3
 trl==0.15.2

@@ -8,14 +8,11 @@ import torch
 import torchaudio
 from datasets import load_dataset
 from torch.utils.data import Dataset
-from trl.data_utils import maybe_apply_chat_template
 
+DEFAULT_PROMPT_TEMPLATE = "{question} Please choose the answer from the following options: {choices}. Output the final answer in <answer> </answer>."
 
 def _resample_audio(audio_array, orig_sr, target_sr=16000):
     """Resample audio to target sample rate."""
-    if orig_sr == target_sr:
-        return audio_array
-
     if isinstance(audio_array, np.ndarray):
         waveform = torch.from_numpy(audio_array).float()
     else:
@@ -48,7 +45,7 @@ def _parse_hf_question(question_text):
     return question_text, []
 
 
-def _handle_hf_item(item, sample_rate=16000):
+def _handle_hf_item(item, sample_rate=16000, prompt_template=DEFAULT_PROMPT_TEMPLATE):
     """
     Convert a HF dataset item to the format expected by the trainer.
 
@@ -59,18 +56,21 @@ def _handle_hf_item(item, sample_rate=16000):
     """
     # Extract and resample audio
     audio_data = item['audio']
-    audio = _resample_audio(audio_data['array'], audio_data['sampling_rate'], sample_rate)
+    audio = audio_data['array']
+    if audio_data['sampling_rate'] != sample_rate:
+        audio = _resample_audio(audio, audio_data['sampling_rate'], sample_rate)
 
     # Parse question and build prompt
     question, choices = _parse_hf_question(item['question'])
     question = question.replace('video', 'audio')
-    question_template = f"{question} Please choose the answer from the following options: {choices}. Output the final answer in <answer> </answer>."
+
+    prompt_text = prompt_template.format(question=question, choices=choices)
 
     prompt = [{
         "role": "user",
         "content": [
             {"type": "audio", "audio_url": item['file_name']},
-            {"type": "text", "text": question_template}
+            {"type": "text", "text": prompt_text}
         ]
     }]
 
@@ -79,13 +79,11 @@ def _handle_hf_item(item, sample_rate=16000):
     answer_match = re.match(r'^[A-Z]\.\s*(.+)$', answer)
     if answer_match:
         answer = answer_match.group(1)
-    solution = f"<answer>{answer}</answer>"
 
     return {
         "audio": audio,
         "prompt": prompt,
-        "solution": solution,
-        "file_name": item['file_name']
+        "solution": answer,
     }
 
 
@@ -101,16 +99,13 @@ class HFAudioDataset(Dataset):
         max_prompt_length: Maximum length for prompt tokens (truncates from left if exceeded)
     """
 
-    def __init__(self, dataset_path, processor, sample_rate=16000, split=None, max_prompt_length=None):
+    def __init__(self, dataset_path, processor, sample_rate=16000, split=None, max_prompt_length=None, prompt_template=DEFAULT_PROMPT_TEMPLATE):
         super().__init__()
         self.sample_rate = sample_rate
         self.processor = processor
         self.max_prompt_length = max_prompt_length
-
+        self.prompt_template = prompt_template
         self.dataset = load_dataset(dataset_path, split=split)
-        if split is not None and isinstance(self.dataset, dict):
-            self.dataset = self.dataset[split]
-
         logging.info(f"Loaded HF dataset from {dataset_path}, len: {len(self.dataset)}, sample_rate: {sample_rate}")
 
     def __len__(self):
@@ -118,7 +113,7 @@ class HFAudioDataset(Dataset):
 
     def __getitem__(self, index):
         item = self.dataset[index]
-        return _handle_hf_item(item, self.sample_rate)
+        return _handle_hf_item(item, self.sample_rate, self.prompt_template)
 
     def collate_fn(self, batch: list[dict[str, Any]]) -> dict[str, Any]:
         """
@@ -134,12 +129,19 @@ class HFAudioDataset(Dataset):
         solutions = [item["solution"] for item in batch]
 
         # Apply chat template to get text prompts
-        prompts_text = [maybe_apply_chat_template(item, self.processor)["prompt"] for item in batch]
+        prompts_text = [
+            self.processor.apply_chat_template(
+                item,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            for item in prompts
+        ]
 
         # Process with processor (tokenization + audio features)
         processed = self.processor(
             text=prompts_text,
-            audios=audios,
+            audio=audios,
             sampling_rate=self.sample_rate,
             return_tensors="pt",
             padding=True,
@@ -163,7 +165,7 @@ class HFAudioDataset(Dataset):
             "input_features": processed["input_features"],
             "feature_attention_mask": processed["feature_attention_mask"],
             # Raw data for reward functions, e.g. could put label here
-            "meta_data": [prompts, solutions],
+            "meta_data": [solutions],
         }
 
 
@@ -183,7 +185,7 @@ def _handle_hf_item_sft(item, sft_data_dict, sample_rate=16000):
     # Parse question and build prompt
     question, choices = _parse_hf_question(item['question'])
     question = question.replace('video', 'audio')
-    question_template = f"{question} Please choose the answer from the following options: {choices}. Output the thinking process in <think> </think> and final answer in <answer> </answer>."
+    prompt_template = f"{question} Please choose the answer from the following options: {choices}. Output the thinking process in <think> </think> and final answer in <answer> </answer>."
     # Get response from sft_data_dict
     sft_item = sft_data_dict.get(item['file_name'], {})
     model_think = sft_item.get('model_think', '')
@@ -196,7 +198,7 @@ def _handle_hf_item_sft(item, sft_data_dict, sample_rate=16000):
             "role": "user",
             "content": [
                 {"type": "audio", "audio_url": item['file_name']},
-                {"type": "text", "text": question_template}
+                {"type": "text", "text": prompt_template}
             ]
         },
         {
@@ -286,7 +288,7 @@ class SFTAudioDataset(Dataset):
         # Process with processor (tokenization + audio features)
         processed = self.processor(
             text=texts,
-            audios=audios,
+            audio=audios,
             sampling_rate=self.sample_rate,
             return_tensors="pt",
             padding=True,
@@ -344,20 +346,20 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+    HF_DATASET_PATH = "/workspace_yuekai/HF/avqa-processed"
+    MODEL_PATH = "/workspace_yuekai/HF/Qwen2-Audio-7B-Instruct"
+    MODEL_PATH = "/workspace_yuekai/HF/Qwen2.5-Omni-3B"
+    SFT_JSON_PATH = "/workspace_yuekai/asr/r1-aqa/avqa_new.json"
+
     parser = argparse.ArgumentParser(description="Test SFTAudioDataset")
-    parser.add_argument("--hf_dataset_path", type=str, required=True, help="Path to HF dataset")
-    parser.add_argument("--model_path", type=str, required=True, help="Path to model for processor")
-    parser.add_argument("--sft_json_path", type=str, required=True, help="Path to SFT JSON file")
+    parser.add_argument("--hf_dataset_path", type=str, default=HF_DATASET_PATH, help="Path to HF dataset")
+    parser.add_argument("--model_path", type=str, default=MODEL_PATH, help="Path to model for processor")
+    parser.add_argument("--sft_json_path", type=str, default=None, help="Path to SFT JSON file")
     args = parser.parse_args()
 
     print("=" * 60)
-    print("Testing SFTAudioDataset")
+    print("Testing AudioDataset")
     print("=" * 60)
-
-    # Load JSON to count items
-    with open(args.sft_json_path, 'r') as f:
-        sft_json_data = json.load(f)
-    print(f"SFT JSON file items: {len(sft_json_data)}")
 
     # Load processor
     processor = AutoProcessor.from_pretrained(args.model_path)
@@ -366,18 +368,39 @@ if __name__ == "__main__":
     hf_dataset = load_dataset(args.hf_dataset_path, split='train')
     print(f"HF Dataset (train split) items: {len(hf_dataset)}")
 
-    # Load SFT dataset with filtering
-    sft_dataset = SFTAudioDataset(
+    audio_dataset = HFAudioDataset(
         args.hf_dataset_path,
         processor=processor,
         split='train',
-        sft_json_path=args.sft_json_path
+        prompt_template=DEFAULT_PROMPT_TEMPLATE,
     )
-    print(f"SFT Dataset (filtered) items: {len(sft_dataset)}")
 
-    print("\n" + "=" * 60)
-    print("Summary")
-    print("=" * 60)
-    print(f"  - Original HF Dataset: {len(hf_dataset)}")
-    print(f"  - SFT JSON file:       {len(sft_json_data)}")
-    print(f"  - SFT Dataset:         {len(sft_dataset)}")
+    print(f"Audio Dataset items: {len(audio_dataset)}")
+    print("Audio Dataset item: ", audio_dataset[0])
+
+    # Test collate function
+    batch = audio_dataset.collate_fn([audio_dataset[0], audio_dataset[1]])
+    print("Batch: ", batch.keys())
+    print("Batch meta_data: ", batch["meta_data"])
+
+
+    # Load JSON to count items
+    # with open(args.sft_json_path, 'r') as f:
+    #     sft_json_data = json.load(f)
+    # print(f"SFT JSON file items: {len(sft_json_data)}")
+
+    # Load SFT dataset with filtering
+    # sft_dataset = SFTAudioDataset(
+    #     args.hf_dataset_path,
+    #     processor=processor,
+    #     split='train',
+    #     sft_json_path=args.sft_json_path
+    # )
+    # print(f"SFT Dataset (filtered) items: {len(sft_dataset)}")
+
+    # print("\n" + "=" * 60)
+    # print("Summary")
+    # print("=" * 60)
+    # print(f"  - Original HF Dataset: {len(hf_dataset)}")
+    # print(f"  - SFT JSON file:       {len(sft_json_data)}")
+    # print(f"  - SFT Dataset:         {len(sft_dataset)}")
