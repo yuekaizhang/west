@@ -10,6 +10,8 @@ export PYTHONPATH=$PYTHONPATH:$PWD
 dir=exp/grpo
 model_name_or_path=/workspace_yuekai/HF/Qwen2-Audio-7B-Instruct
 hf_dataset_path=/workspace_yuekai/HF/avqa-processed
+
+export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
 num_gpus=$(echo $CUDA_VISIBLE_DEVICES | awk -F ',' '{print NF}')
 
 stage=train
@@ -28,9 +30,9 @@ if [ $stage == "train" ] || [ $stage == "all" ]; then
         --master_addr=127.0.0.1 \
         --master_port=32778 \
         west/bin/train_grpo.py \
-        --config_path conf/ds_zero3.json \
+        --deepspeed conf/ds_zero3.json \
         --model_name_or_path ${model_name_or_path} \
-        --out_dir ${dir} \
+        --output_dir ${dir} \
         --hf_dataset_path ${hf_dataset_path} \
         --use_wandb false || exit 1
 fi

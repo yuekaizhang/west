@@ -13,8 +13,9 @@ from transformers import (
     AutoProcessor,
     HfArgumentParser,
     Qwen2AudioForConditionalGeneration,
+    Qwen2_5OmniThinkerForConditionalGeneration,
+    TrainingArguments
 )
-from trl import GRPOConfig
 
 from west.dataset.hf_dataset import HFAudioDataset
 from west.trainer.grpo_trainer import GRPOTrainer
@@ -22,10 +23,13 @@ from west.utils.rewards import accuracy_reward, format_reward
 
 
 @dataclass
-class TrainingArguments:
+class CustomTrainingArguments(TrainingArguments):
     """Arguments for GRPO training."""
-
-    config_path: Optional[str] = field(
+    learning_rate: float = field(
+        default=1e-6,
+        metadata={"help": "Learning rate"},
+    )
+    deepspeed: Optional[str] = field(
         default=None,
         metadata={"help": "DeepSpeed config path"},
     )
@@ -33,7 +37,7 @@ class TrainingArguments:
         default=None,
         metadata={"help": "Model name or path"},
     )
-    out_dir: Optional[str] = field(
+    output_dir: Optional[str] = field(
         default=None,
         metadata={"help": "Output directory for model"},
     )
@@ -50,89 +54,138 @@ class TrainingArguments:
         metadata={"help": "Set to False to keep all columns"},
     )
 
+    # Training
+    per_device_train_batch_size: int = field(
+        default=1,
+        metadata={"help": "Batch size per device for training"},
+    )
+    gradient_accumulation_steps: int = field(
+        default=2,
+        metadata={"help": "Number of gradient accumulation steps"},
+    )
+    num_train_epochs: int = field(
+        default=2,
+        metadata={"help": "Number of training epochs"},
+    )
+    max_steps: int = field(
+        default=1000,
+        metadata={"help": "Maximum number of training steps"},
+    )
 
+    # Generation
+    max_prompt_length: int = field(
+        default=1024,
+        metadata={"help": "Maximum prompt length for generation"},
+    )
+    max_completion_length: int = field(
+        default=256,
+        metadata={"help": "Maximum completion length for generation"},
+    )
+    num_generations: int = field(
+        default=8,
+        metadata={"help": "Number of generations per prompt"},
+    )
+    temperature: float = field(
+        default=1.0,
+        metadata={"help": "Sampling temperature"},
+    )
+    # TODO: fix me, disable kl computation if beta is 0.0
+    beta: float = field(
+        default=0.0,
+        metadata={"help": "KL penalty coefficient"},
+    )
+
+    # Logging & Saving
+    logging_steps: int = field(
+        default=1,
+        metadata={"help": "Log every N steps"},
+    )
+    save_steps: int = field(
+        default=100,
+        metadata={"help": "Save every N steps"},
+    )
+    save_only_model: bool = field(
+        default=True,
+        metadata={"help": "Save only model weights"},
+    )
+    report_to: list[str] = field(
+        default_factory=list,
+        metadata={"help": "Reporting integrations"},
+    )
+    run_name: str = field(
+        default="AQA-GRPO",
+        metadata={"help": "Run name for logging"},
+    )
+
+    # Misc
+    seed: int = field(
+        default=42,
+        metadata={"help": "Random seed"},
+    )
+    data_seed: int = field(
+        default=42,
+        metadata={"help": "Data shuffling seed"},
+    )
+    bf16: bool = field(
+        default=True,
+        metadata={"help": "Use bfloat16 precision"},
+    )
+    gradient_checkpointing: bool = field(
+        default=False,
+        metadata={"help": "Enable gradient checkpointing"},
+    )
 def main():
-    # ==================== Parse Arguments ====================
-    parser = HfArgumentParser(TrainingArguments)
+    parser = HfArgumentParser(CustomTrainingArguments)
     args = parser.parse_args_into_dataclasses()[0]
+
+    if not args.report_to:
+        args.report_to = ["wandb"] if args.use_wandb == "true" else []
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     transformers.logging.set_verbosity_info()
     logging.info(f"Training arguments: {args}")
 
-    # ==================== Load Model ====================
     logging.info(f"Loading model from: {args.model_name_or_path}")
-    model = Qwen2AudioForConditionalGeneration.from_pretrained(args.model_name_or_path)
-
-    # ==================== Load Reference Model ====================
-    logging.info("Creating reference model...")
-    ref_model = Qwen2AudioForConditionalGeneration.from_pretrained(args.model_name_or_path)
-
-    # ==================== Load Processor ====================
-    logging.info("Loading processor...")
+    if "Qwen2-Audio-7B-Instruct" in args.model_name_or_path:
+        model = Qwen2AudioForConditionalGeneration.from_pretrained(args.model_name_or_path)
+        ref_model = Qwen2AudioForConditionalGeneration.from_pretrained(args.model_name_or_path)
+    elif "Qwen2.5-Omni-3B" in args.model_name_or_path:
+        model = Qwen2_5OmniThinkerForConditionalGeneration.from_pretrained(args.model_name_or_path)
+        ref_model = Qwen2_5OmniThinkerForConditionalGeneration.from_pretrained(args.model_name_or_path)
+    else:
+        raise ValueError(f"Model {args.model_name_or_path} not supported")
     processor = AutoProcessor.from_pretrained(args.model_name_or_path)
 
-    # ==================== Setup Training Config ====================
-    max_prompt_length = 512
-
-    training_config = GRPOConfig(
-        output_dir=args.out_dir,
-        deepspeed=args.config_path,
-        # Training
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=2,
-        num_train_epochs=2,
-        max_steps=1000,
-        # Generation
-        max_prompt_length=max_prompt_length,
-        num_generations=8,
-        temperature=1.0,
-        # Logging & Saving
-        logging_steps=1,
-        save_steps=100,
-        save_only_model=True,
-        report_to="wandb" if args.use_wandb == "true" else [],
-        run_name="AQA-GRPO",
-        # Misc
-        seed=42,
-        data_seed=42,
-        bf16=True,
-        gradient_checkpointing=False,
-    )
-
-    # ==================== Load Dataset ====================
     logging.info(f"Loading dataset from: {args.hf_dataset_path}")
     train_dataset = HFAudioDataset(
         args.hf_dataset_path,
         processor=processor,
         split="train",
-        max_prompt_length=max_prompt_length,
+        max_prompt_length=args.max_prompt_length,
     )
     eval_dataset = HFAudioDataset(
         args.hf_dataset_path,
         processor=processor,
         split="validation",
-        max_prompt_length=max_prompt_length,
+        max_prompt_length=args.max_prompt_length,
     )
 
-    # ==================== Setup Reward Functions ====================
+
     reward_funcs = [accuracy_reward, format_reward]
 
-    # ==================== Create Trainer ====================
     trainer = GRPOTrainer(
         model=model,
         ref_model=ref_model,
         processor=processor,
         reward_funcs=reward_funcs,
-        args=training_config,
+        args=args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         data_collator=train_dataset.collate_fn,
     )
 
-    # ==================== Train ====================
     trainer.train()
-    trainer.save_model(args.out_dir)
+    trainer.save_model(args.output_dir)
 
 
 if __name__ == "__main__":
