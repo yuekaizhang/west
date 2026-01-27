@@ -13,7 +13,7 @@ from transformers import (
     AutoProcessor,
     HfArgumentParser,
     Qwen2AudioForConditionalGeneration,
-    Qwen2_5OmniThinkerForConditionalGeneration,
+    Qwen2_5OmniForConditionalGeneration,
     TrainingArguments
 )
 
@@ -150,8 +150,18 @@ def main():
         model = Qwen2AudioForConditionalGeneration.from_pretrained(args.model_name_or_path)
         ref_model = Qwen2AudioForConditionalGeneration.from_pretrained(args.model_name_or_path)
     elif "Qwen2.5-Omni" in args.model_name_or_path:
-        model = Qwen2_5OmniThinkerForConditionalGeneration.from_pretrained(args.model_name_or_path)
-        ref_model = Qwen2_5OmniThinkerForConditionalGeneration.from_pretrained(args.model_name_or_path)
+        model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
+            args.model_name_or_path,
+            enable_audio_output=False,
+            # torch_dtype="auto",
+            # attn_implementation="flash_attention_2",
+        )
+        ref_model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
+            args.model_name_or_path,
+            enable_audio_output=False,
+            # torch_dtype="auto",
+            # attn_implementation="flash_attention_2",
+        )
     else:
         raise ValueError(f"Model {args.model_name_or_path} not supported")
     processor = AutoProcessor.from_pretrained(args.model_name_or_path)

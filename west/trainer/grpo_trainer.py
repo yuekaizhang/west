@@ -141,6 +141,8 @@ class GRPOTrainer(Trainer):
 
     def _get_per_token_logps(self, model, inputs: dict) -> torch.Tensor:
         """Compute per-token log probabilities."""
+        if hasattr(model, "module") and hasattr(model.module, "thinker"):
+            model = model.module.thinker
         logits = model(
             input_ids=inputs["input_ids"],
             attention_mask=inputs["attention_mask"],
