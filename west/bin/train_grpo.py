@@ -142,14 +142,14 @@ def main():
         args.report_to = ["wandb"] if args.use_wandb == "true" else []
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    transformers.logging.set_verbosity_info()
+    logging.disable(logging.WARNING)
     logging.info(f"Training arguments: {args}")
 
     logging.info(f"Loading model from: {args.model_name_or_path}")
     if "Qwen2-Audio-7B-Instruct" in args.model_name_or_path:
         model = Qwen2AudioForConditionalGeneration.from_pretrained(args.model_name_or_path)
         ref_model = Qwen2AudioForConditionalGeneration.from_pretrained(args.model_name_or_path)
-    elif "Qwen2.5-Omni-3B" in args.model_name_or_path:
+    elif "Qwen2.5-Omni" in args.model_name_or_path:
         model = Qwen2_5OmniThinkerForConditionalGeneration.from_pretrained(args.model_name_or_path)
         ref_model = Qwen2_5OmniThinkerForConditionalGeneration.from_pretrained(args.model_name_or_path)
     else:

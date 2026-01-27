@@ -28,12 +28,12 @@ from vllm import LLM, SamplingParams
 
 DEFAULT_TEMPLATE = "{question} Please choose the answer from the following options: {choices}. Output the final answer in <answer> </answer>."
 THINK_TEMPLATE = "{question} Please choose the answer from the following options: {choices}. Output the thinking process in <think> </think> and final answer in <answer> </answer>."
-
+NEW_TEMPLATE = "{question}Select one option from the provided choices.{choices}"
 
 def extract_answer(output_str: str) -> str:
     """Extract content from <answer> tags in the model output."""
     match = re.search(r"<answer>(.*?)</answer>", output_str, re.DOTALL)
-    return match.group(1) if match else ""
+    return match.group(1) if match else output_str
 
 
 def extract_think(output_str: str) -> str:
@@ -52,9 +52,9 @@ def parse_args():
     parser.add_argument("--force", action="store_true", help="force test")
     parser.add_argument("--tensor_parallel_size", type=int, default=1, help="tensor parallel size for vLLM")
     parser.add_argument("--max_new_tokens", type=int, default=2048, help="max new tokens for generation")
-    parser.add_argument("--temperature", type=float, default=0.7, help="temperature for generation")
+    parser.add_argument("--temperature", type=float, default=0.0, help="temperature for generation")
     parser.add_argument("--max_audio_duration_in_seconds", type=int, default=30, help="max audio duration in seconds")
-    parser.add_argument("--template", type=str, default="default", choices=["default", "think"], help="prompt template type")
+    parser.add_argument("--template", type=str, default="default", choices=["default", "think", "new"], help="prompt template type")
     return parser.parse_args()
 
 
@@ -84,6 +84,8 @@ def _get_prompt(obj_dict, processor, template="default"):
     # Select template based on type
     if template == "think":
         prompt_template = THINK_TEMPLATE
+    elif template == "new":
+        prompt_template = NEW_TEMPLATE
     else:
         prompt_template = DEFAULT_TEMPLATE
 
