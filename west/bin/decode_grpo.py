@@ -4,6 +4,17 @@ This script runs inference on the MMAU audio understanding benchmark using
 Qwen2-Audio models with vLLM for efficient batch processing.
 """
 
+# Must set environment variables before any imports that might initialize CUDA
+import os
+os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+
+# Also set multiprocessing start method
+import multiprocessing
+try:
+    multiprocessing.set_start_method('spawn', force=True)
+except RuntimeError:
+    pass  # Already set
+
 import argparse
 import json
 import logging
@@ -12,7 +23,11 @@ import re
 
 import torchaudio
 from tqdm import tqdm
+from transformers import AutoProcessor
 from vllm import LLM, SamplingParams
+
+DEFAULT_TEMPLATE = "{question} Please choose the answer from the following options: {choices}. Output the final answer in <answer> </answer>."
+THINK_TEMPLATE = "{question} Please choose the answer from the following options: {choices}. Output the thinking process in <think> </think> and final answer in <answer> </answer>."
 
 
 def extract_answer(output_str: str) -> str:
@@ -37,33 +52,63 @@ def parse_args():
     parser.add_argument("--force", action="store_true", help="force test")
     parser.add_argument("--tensor_parallel_size", type=int, default=1, help="tensor parallel size for vLLM")
     parser.add_argument("--max_new_tokens", type=int, default=2048, help="max new tokens for generation")
+    parser.add_argument("--temperature", type=float, default=0.7, help="temperature for generation")
+    parser.add_argument("--max_audio_duration_in_seconds", type=int, default=30, help="max audio duration in seconds")
+    parser.add_argument("--template", type=str, default="default", choices=["default", "think"], help="prompt template type")
     return parser.parse_args()
 
 
-def _get_audio(wav_path):
+def _get_audio(wav_path, max_audio_duration_in_seconds=30, target_sample_rate=16000):
     """Load audio file and return (numpy_array, sample_rate) tuple for vLLM."""
     waveform, sample_rate = torchaudio.load(wav_path)
-    if sample_rate != 16000:
-        waveform = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=16000)(waveform)
+    if sample_rate != target_sample_rate:
+        waveform = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=target_sample_rate)(waveform)
     audio = waveform[0].numpy()
     # cut off to 3000 * 16000 = 4800000 samples for qwen2-audio model
-    audio = audio[:480000]
-    return (audio, 16000)
+    max_audio_duration_in_samples = max_audio_duration_in_seconds * target_sample_rate
+    audio = audio[:max_audio_duration_in_samples]
+    return (audio, target_sample_rate)
 
 
-def _get_prompt(obj_dict):
-    """Generate prompt for Qwen2-Audio model using vLLM format."""
-    choice_str = f"Please choose the answer from the following options: {obj_dict['choices']}."
-    question_template = f"{obj_dict['question']} {choice_str} Output the thinking process in <think> </think> and final answer in <answer> </answer>."
+def _get_prompt(obj_dict, processor, template="default"):
+    """Generate prompt for Qwen2-Audio model using processor's chat template.
 
-    # Qwen2-Audio prompt format for vLLM
-    audio_placeholder = "Audio 1: <|audio_bos|><|AUDIO|><|audio_eos|>\n"
-    prompt = (
-        "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
-        "<|im_start|>user\n"
-        f"{audio_placeholder}{question_template}<|im_end|>\n"
-        "<|im_start|>assistant\n"
+    Args:
+        obj_dict: Dict containing 'question', 'choices', and 'audio_id'
+        processor: AutoProcessor for applying chat template
+        template: 'default' or 'think' template type
+
+    Returns:
+        Formatted prompt string
+    """
+    # Select template based on type
+    if template == "think":
+        prompt_template = THINK_TEMPLATE
+    else:
+        prompt_template = DEFAULT_TEMPLATE
+
+    # Format the prompt text
+    prompt_text = prompt_template.format(
+        question=obj_dict['question'],
+        choices=obj_dict['choices']
     )
+
+    # Construct message in the format expected by apply_chat_template
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "audio", "audio_url": obj_dict.get('audio_id', 'test.wav')},
+            {"type": "text", "text": prompt_text}
+        ]
+    }]
+
+    # Apply chat template to get the final prompt
+    prompt = processor.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+
     return prompt
 
 
@@ -89,8 +134,11 @@ def main():
         tensor_parallel_size=args.tensor_parallel_size,
     )
 
+    processor = AutoProcessor.from_pretrained(args.model_path)
+    logging.info(f"Loaded processor from {args.model_path}")
+
     sampling_params = SamplingParams(
-        # temperature=0.0,
+        temperature=args.temperature,
         max_tokens=args.max_new_tokens,
     )
 
@@ -107,8 +155,8 @@ def main():
         batch_inputs = []
         for bd in batch_data:
             audio_path = os.path.join(args.audio_dir, bd["audio_id"])
-            audio_data = _get_audio(audio_path)
-            prompt = _get_prompt(bd)
+            audio_data = _get_audio(audio_path, args.max_audio_duration_in_seconds)
+            prompt = _get_prompt(bd, processor, args.template)
 
             batch_inputs.append({
                 "prompt": prompt,
@@ -130,7 +178,7 @@ def main():
         model_answer = extract_answer(original_output).strip()
         model_think = extract_think(original_output).strip()
         result = input_example.copy()
-        result["model_prediction"] = model_answer
+        result["model_output"] = model_answer
         result["model_think"] = model_think
         result["model_response"] = original_output
         final_output.append(result)

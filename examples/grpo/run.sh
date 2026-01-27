@@ -6,8 +6,8 @@ project_dir=$(pwd)/../../
 [ ! -s west ] && ln -s $project_dir/west
 [ ! -s tools ] && ln -s $project_dir/tools
 export PYTHONPATH=$PYTHONPATH:$PWD
-
-dir=exp/grpo
+run_name=grpo_new
+dir=exp/${run_name}
 model_name_or_path=/workspace_yuekai/HF/Qwen2-Audio-7B-Instruct
 hf_dataset_path=/workspace_yuekai/HF/avqa-processed
 
@@ -34,17 +34,18 @@ if [ $stage == "train" ] || [ $stage == "all" ]; then
         --model_name_or_path ${model_name_or_path} \
         --output_dir ${dir} \
         --hf_dataset_path ${hf_dataset_path} \
-        --use_wandb false || exit 1
+        --run_name ${run_name} \
+        --use_wandb true || exit 1
 fi
 
 if [ $stage == "decode" ] || [ $stage == "all" ]; then
+    export VLLM_WORKER_MULTIPROC_METHOD=spawn
     mmau_dir=data/MMAU
-    iters=(100 200 300 400 500)
-    model_dir=${dir}
+    iters=(200 300 400 500 600)
     batch_size=32
     for iter in ${iters[*]}; do
-        model_dir=${model_dir}/checkpoint-${iter}
-        out_dir=${model_dir}/test_${iter}_vllm
+        model_dir=${dir}/checkpoint-${iter}
+        out_dir=${dir}/mmau_test_mini_checkpoint_${iter}_vllm
 
         python3 west/bin/decode_grpo.py \
         --model_path ${model_dir} \
@@ -55,6 +56,6 @@ if [ $stage == "decode" ] || [ $stage == "all" ]; then
         
         python3 ${mmau_dir}/evaluation.py \
         --input ${out_dir}/res_mmau_mini.json \
-        > ${dir}/eval_mmau_mini.txt || exit 1
+        > ${out_dir}/eval_mmau_mini.txt || exit 1
     done
 fi

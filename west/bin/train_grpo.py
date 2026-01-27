@@ -89,9 +89,9 @@ class CustomTrainingArguments(TrainingArguments):
         default=1.0,
         metadata={"help": "Sampling temperature"},
     )
-    # TODO: fix me, disable kl computation if beta is 0.0
+
     beta: float = field(
-        default=0.0,
+        default=0.04,
         metadata={"help": "KL penalty coefficient"},
     )
 
