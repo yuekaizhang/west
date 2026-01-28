@@ -41,6 +41,22 @@ if [ $stage == "train" ] || [ $stage == "all" ]; then
         --use_wandb true || exit 1
 fi
 
+if [ $stage == "opd" ]; then
+    torchrun --nproc_per_node=${num_gpus} \
+        --nnodes=1 \
+        --node-rank=0 \
+        --master_addr=127.0.0.1 \
+        --master_port=32778 \
+        west/bin/train_knowledge_distillation.py \
+        --deepspeed conf/ds_zero1.json \
+        --model_name_or_path ${model_name_or_path} \
+        --teacher_model_name_or_path ${teacher_model_name_or_path} \
+        --output_dir ${dir} \
+        --hf_dataset_path ${hf_dataset_path} \
+        --run_name ${run_name} \
+        --use_wandb true || exit 1
+fi
+
 if [ $stage == "decode" ] || [ $stage == "all" ]; then
     export VLLM_WORKER_MULTIPROC_METHOD=spawn
     mmau_dir=data/MMAU
