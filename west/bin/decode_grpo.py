@@ -117,6 +117,7 @@ def _get_prompt(obj_dict, processor, template="default"):
 def main():
     args = parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.disable(logging.WARNING)
     logging.info(args)
 
     if not args.force and os.path.exists(args.out_file) and os.path.getsize(args.out_file) > 0:

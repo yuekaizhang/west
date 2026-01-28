@@ -6,11 +6,12 @@ project_dir=$(pwd)/../../
 [ ! -s west ] && ln -s $project_dir/west
 [ ! -s tools ] && ln -s $project_dir/tools
 export PYTHONPATH=$PYTHONPATH:$PWD
-run_name=grpo_omni_3b
+#run_name=grpo_omni_3b
+run_name=grpo_omni_7b
 dir=exp/${run_name}
 # model_name_or_path=/workspace_yuekai/HF/Qwen2-Audio-7B-Instruct
-model_name_or_path=/workspace_yuekai/HF/Qwen2.5-Omni-3B
-# model_name_or_path=/workspace_yuekai/HF/Qwen2.5-Omni-7B
+# model_name_or_path=/workspace_yuekai/HF/Qwen2.5-Omni-3B
+model_name_or_path=/workspace_yuekai/HF/Qwen2.5-Omni-7B
 hf_dataset_path=/workspace_yuekai/HF/avqa-processed
 
 export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
@@ -43,7 +44,7 @@ fi
 if [ $stage == "decode" ] || [ $stage == "all" ]; then
     export VLLM_WORKER_MULTIPROC_METHOD=spawn
     mmau_dir=data/MMAU
-    iters=(0)
+    iters=(100 200 300 400 500)
     batch_size=32
     for iter in ${iters[*]}; do
         model_dir=${dir}/checkpoint-${iter}
@@ -53,7 +54,6 @@ if [ $stage == "decode" ] || [ $stage == "all" ]; then
         --model_path ${model_dir} \
         --data_file ${mmau_dir}/mmau-test-mini.json \
         --audio_dir ${mmau_dir} \
-        --template new --temperature 0 \
         --out_file ${out_dir}/res_mmau_mini.json \
         --batch_size ${batch_size} || exit 1
         
