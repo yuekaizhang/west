@@ -42,7 +42,7 @@ from trl.trainer.utils import selective_log_softmax
 RewardFunc = Callable[[list, list], list[float]]
 
 
-class GRPOTrainer(Trainer):
+class KnowledgeDistillationTrainer(Trainer):
     """
     Trainer for Group Relative Policy Optimization (GRPO).
 
@@ -64,7 +64,7 @@ class GRPOTrainer(Trainer):
         model: PreTrainedModel,
         ref_model: PreTrainedModel,
         processor: ProcessorMixin,
-        reward_funcs: Union[RewardFunc, list[RewardFunc]],
+        teacher_model_processor: ProcessorMixin,
         args: TrainingArguments,
         train_dataset: Optional[Union[Dataset, IterableDataset]] = None,
         eval_dataset: Optional[Union[Dataset, IterableDataset]] = None,
@@ -81,10 +81,8 @@ class GRPOTrainer(Trainer):
 
         set_seed(args.seed, device_specific=True)
 
-        self.reward_funcs = reward_funcs if isinstance(reward_funcs, list) else [reward_funcs]
-
-        self.num_generations = args.num_generations
-        self.beta = args.beta
+        self.num_generations = 1
+        self.topk_logits_k = 64 # Top-k logits for teacher guidance
 
         self.model_accepts_loss_kwargs = False
         self._metrics = defaultdict(list)
@@ -101,6 +99,8 @@ class GRPOTrainer(Trainer):
         if self.ref_model is not None:
             assert self.is_deepspeed_enabled, "Reference model requires DeepSpeed to be enabled"
             self.ref_model = prepare_deepspeed(self.ref_model, self.accelerator)
+
+        self.teacher_model_processor = teacher_model_processor
 
     def _rollout(self, model, inputs: dict) -> tuple[list[str], torch.Tensor, torch.Tensor]:
         """Generate completions from the actor model.
@@ -139,7 +139,8 @@ class GRPOTrainer(Trainer):
 
         return generated_strs, generated_ids, generated_mask
 
-    def _get_per_token_logps(self, model, inputs: dict) -> torch.Tensor:
+    def _get_per_token_logps(self, model, inputs: dict, topk_logits_k: int = 64) -> torch.Tensor:
+        # TODO: for per token, get topk logits
         """Compute per-token log probabilities."""
         if hasattr(model, "module") and hasattr(model.module, "thinker"):
             model = model.module.thinker
@@ -189,85 +190,25 @@ class GRPOTrainer(Trainer):
 
         return per_token_logps, ref_per_token_logps
 
-    def _compute_rewards(self, generated_strs: list[str], meta_data: list) -> torch.Tensor:
-        """Compute rewards for generated completions.
-
-        Returns:
-            rewards_per_func: Rewards from each reward function [num_samples, num_funcs]
-        """
-        solutions = meta_data[0]
-        solutions_expanded = [s for s in solutions for _ in range(self.num_generations)]
-
-        device = self.accelerator.device
-        rewards_per_func = torch.zeros(len(solutions_expanded), len(self.reward_funcs), device=device)
-        for i, reward_func in enumerate(self.reward_funcs):
-            rewards = reward_func(
-                hypos_list=generated_strs,
-                ground_truth_list=solutions_expanded,
-            )
-            rewards_per_func[:, i] = torch.tensor(rewards, dtype=torch.float32, device=device)
-
-        return rewards_per_func
-
-    def _compute_advantages(self, total_rewards: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Compute advantages using group-relative normalization (GRPO).
-
-        Returns:
-            advantages: Normalized advantages
-            std_rewards: Std reward per group (for logging)
-        """
-        grouped_rewards = total_rewards.view(-1, self.num_generations)
-        mean_rewards = grouped_rewards.mean(dim=1).repeat_interleave(self.num_generations)
-        std_rewards = grouped_rewards.std(dim=1).repeat_interleave(self.num_generations)
-        advantages = (total_rewards - mean_rewards) / (std_rewards + 1e-4)
-        return advantages, std_rewards
-
     def _compute_kl(
         self,
         per_token_logps: torch.Tensor,
         ref_per_token_logps: torch.Tensor,
     ) -> torch.Tensor:
-        """Compute per-token KL divergence.
+        """Compute reverse KL divergence.
 
-        KL(π || π_ref) ≈ exp(log π_ref - log π) - (log π_ref - log π) - 1
         """
-        return torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
+        return 
 
-    def _compute_per_token_loss(
-        self,
-        per_token_logps: torch.Tensor,
-        per_token_kl: torch.Tensor,
-        advantages: torch.Tensor,
-    ) -> torch.Tensor:
-        """Compute per-token GRPO loss."""
-        # Policy gradient (importance ratio = 1 for on-policy)
-        per_token_loss = torch.exp(per_token_logps - per_token_logps.detach()) * advantages.unsqueeze(1)
-        per_token_loss = -(per_token_loss - self.beta * per_token_kl)
-        return per_token_loss
 
     def _log_metrics(
         self,
         generated_mask: torch.Tensor,
-        rewards_per_func: torch.Tensor,
-        total_rewards: torch.Tensor,
-        std_rewards: torch.Tensor,
         per_token_kl: torch.Tensor,
     ):
         """Log training metrics."""
         self._metrics["completion_length"].append(
             self.accelerator.gather_for_metrics(generated_mask.sum(1)).float().mean().item()
-        )
-
-        for i, reward_func in enumerate(self.reward_funcs):
-            func_name = reward_func.__name__
-            mean_reward = self.accelerator.gather_for_metrics(rewards_per_func[:, i]).mean().item()
-            self._metrics[f"rewards/{func_name}"].append(mean_reward)
-
-        self._metrics["reward"].append(
-            self.accelerator.gather_for_metrics(total_rewards).mean().item()
-        )
-        self._metrics["reward_std"].append(
-            self.accelerator.gather_for_metrics(std_rewards).mean().item()
         )
 
         mean_kl = ((per_token_kl * generated_mask).sum(dim=1) / generated_mask.sum(dim=1)).mean()
@@ -279,35 +220,31 @@ class GRPOTrainer(Trainer):
         """Compute GRPO loss for a batch of inputs."""
         # Extract meta_data for reward computation
         meta_data = inputs.pop("meta_data")
+        original_prompts = meta_data[1]
 
         # Step 1: Generate completions
         generated_strs, generated_ids, generated_mask = self._rollout(model, inputs)
 
-        # Step 2: Prepare inputs and compute log probabilities
-        logprob_inputs = self._prepare_logprob_inputs(inputs, generated_ids, generated_mask)
-        per_token_logps, ref_per_token_logps = self._compute_logprobs(model, logprob_inputs)
+        teacher_inputs = self._prepare_teacher_logprob_inputs(original_prompts, generated_strs, self.teacher_model_processor)
+        teacher_per_token_logps = self._compute_logprobs(self.teacher_model, teacher_inputs)
+        # exclude the teacher prompt length from the logps
+        # TODO: implement this
 
+        # Step 2: Prepare inputs and compute log probabilities
+        student_logprob_inputs = self._prepare_logprob_inputs(inputs, generated_ids, generated_mask)
+        student_per_token_logps = self._compute_logprobs(model, student_logprob_inputs)
         # Slice to get only completion token logps
         prompt_length = inputs["input_ids"].size(1)
-        per_token_logps = per_token_logps[:, prompt_length - 1:]
-        ref_per_token_logps = ref_per_token_logps[:, prompt_length - 1:]
+        student_per_token_logps = student_per_token_logps[:, prompt_length - 1:]
+        # assert the student and teacher logps have the same shape
+        assert student_per_token_logps.shape == teacher_per_token_logps.shape
 
-        # Step 3: Compute rewards
-        rewards_per_func = self._compute_rewards(generated_strs, meta_data)
-        total_rewards = rewards_per_func.sum(dim=1)
-
-        # Step 4: Compute advantages
-        advantages, std_rewards = self._compute_advantages(total_rewards)
-
-        # Step 5: Compute KL divergence
-        per_token_kl = self._compute_kl(per_token_logps, ref_per_token_logps)
-
-        # Step 6: Compute loss
-        per_token_loss = self._compute_per_token_loss(per_token_logps, per_token_kl, advantages)
+        per_token_loss = self._compute_kl()
         loss = ((per_token_loss * generated_mask).sum(dim=1) / generated_mask.sum(dim=1)).mean()
 
         # Log metrics
-        self._log_metrics(generated_mask, rewards_per_func, total_rewards, std_rewards, per_token_kl)
+        # TODO: implement this
+        self._log_metrics(generated_mask, per_token_loss)
 
         return loss
 

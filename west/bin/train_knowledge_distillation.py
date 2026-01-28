@@ -18,7 +18,7 @@ from transformers import (
 )
 
 from west.dataset.hf_dataset import HFAudioDataset
-from west.trainer.grpo_trainer import GRPOTrainer
+from west.trainer.kd_trainer import KnowledgeDistillationTrainer
 from west.utils.rewards import accuracy_reward, format_reward
 
 
@@ -36,6 +36,10 @@ class CustomTrainingArguments(TrainingArguments):
     model_name_or_path: Optional[str] = field(
         default=None,
         metadata={"help": "Model name or path"},
+    )
+    teacher_model_name_or_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Teacher model name or path"},
     )
     output_dir: Optional[str] = field(
         default=None,
@@ -81,20 +85,10 @@ class CustomTrainingArguments(TrainingArguments):
         default=256,
         metadata={"help": "Maximum completion length for generation"},
     )
-    num_generations: int = field(
-        default=8,
-        metadata={"help": "Number of generations per prompt"},
-    )
     temperature: float = field(
         default=1.0,
         metadata={"help": "Sampling temperature"},
     )
-
-    beta: float = field(
-        default=0.04,
-        metadata={"help": "KL penalty coefficient"},
-    )
-
     # Logging & Saving
     logging_steps: int = field(
         default=1,
@@ -148,15 +142,8 @@ def main():
     logging.info(f"Loading model from: {args.model_name_or_path}")
     if "Qwen2-Audio-7B-Instruct" in args.model_name_or_path:
         model = Qwen2AudioForConditionalGeneration.from_pretrained(args.model_name_or_path)
-        ref_model = Qwen2AudioForConditionalGeneration.from_pretrained(args.model_name_or_path)
     elif "Qwen2.5-Omni" in args.model_name_or_path:
         model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
-            args.model_name_or_path,
-            enable_audio_output=False,
-            # torch_dtype="auto",
-            # attn_implementation="flash_attention_2",
-        )
-        ref_model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
             args.model_name_or_path,
             enable_audio_output=False,
             # torch_dtype="auto",
@@ -165,8 +152,17 @@ def main():
     else:
         raise ValueError(f"Model {args.model_name_or_path} not supported")
     processor = AutoProcessor.from_pretrained(args.model_name_or_path)
-
+    teacher_processor = AutoProcessor.from_pretrained(args.teacher_model_name_or_path)
     logging.info(f"Loading dataset from: {args.hf_dataset_path}")
+    if "Qwen2-Audio-7B-Instruct" in args.teacher_model_name_or_path:
+        teacher_model = Qwen2AudioForConditionalGeneration.from_pretrained(args.teacher_model_name_or_path)
+    elif "Qwen2.5-Omni" in args.teacher_model_name_or_path:
+        teacher_model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
+            args.teacher_model_name_or_path,
+            enable_audio_output=False,
+        )
+    else:
+        raise ValueError(f"Teacher model {args.teacher_model_name_or_path} not supported")
     train_dataset = HFAudioDataset(
         args.hf_dataset_path,
         processor=processor,
@@ -179,15 +175,11 @@ def main():
         split="validation",
         max_prompt_length=args.max_prompt_length,
     )
-
-
-    reward_funcs = [accuracy_reward, format_reward]
-
-    trainer = GRPOTrainer(
+    trainer = KnowledgeDistillationTrainer(
         model=model,
-        ref_model=ref_model,
+        ref_model=teacher_model,
         processor=processor,
-        reward_funcs=reward_funcs,
+        teacher_model_processor=teacher_processor,
         args=args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
