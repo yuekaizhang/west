@@ -1,7 +1,9 @@
-"""GRPO training script for Qwen2-Audio models.
+"""On-Policy Knowledge Distillation training script for Qwen2-Audio models.
 
-This script implements Group Relative Policy Optimization (GRPO) training
-for audio question answering tasks using Qwen2-Audio models.
+This script implements on-policy knowledge distillation where:
+1. Student model generates completions
+2. Teacher model evaluates student's completions
+3. Student learns to match teacher's distribution
 """
 
 import logging
@@ -24,7 +26,7 @@ from west.utils.rewards import accuracy_reward, format_reward
 
 @dataclass
 class CustomTrainingArguments(TrainingArguments):
-    """Arguments for GRPO training."""
+    """Arguments for On-Policy Knowledge Distillation training."""
     learning_rate: float = field(
         default=1e-6,
         metadata={"help": "Learning rate"},
@@ -88,6 +90,10 @@ class CustomTrainingArguments(TrainingArguments):
     temperature: float = field(
         default=1.0,
         metadata={"help": "Sampling temperature"},
+    )
+    topk_logits_k: Optional[int] = field(
+        default=64,
+        metadata={"help": "Top-k logits for distillation. None = full vocabulary, 64 is a common choice"},
     )
     # Logging & Saving
     logging_steps: int = field(
@@ -156,7 +162,7 @@ def main():
     logging.info(f"Loading dataset from: {args.hf_dataset_path}")
     if "Qwen2-Audio-7B-Instruct" in args.teacher_model_name_or_path:
         teacher_model = Qwen2AudioForConditionalGeneration.from_pretrained(args.teacher_model_name_or_path)
-    elif "Qwen2.5-Omni" in args.teacher_model_name_or_path:
+    elif "Qwen2.5-Omni" in args.teacher_model_name_or_path or "omni" in args.teacher_model_name_or_path:
         teacher_model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
             args.teacher_model_name_or_path,
             enable_audio_output=False,
@@ -175,12 +181,16 @@ def main():
         split="validation",
         max_prompt_length=args.max_prompt_length,
     )
+    # Reward functions for monitoring (not used in loss, only for logging)
+    reward_funcs = [accuracy_reward, format_reward]
+
     trainer = KnowledgeDistillationTrainer(
         model=model,
-        ref_model=teacher_model,
+        teacher_model=teacher_model,
         processor=processor,
         teacher_model_processor=teacher_processor,
         args=args,
+        reward_funcs=reward_funcs,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         data_collator=train_dataset.collate_fn,

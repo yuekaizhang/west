@@ -7,11 +7,12 @@ project_dir=$(pwd)/../../
 [ ! -s tools ] && ln -s $project_dir/tools
 export PYTHONPATH=$PYTHONPATH:$PWD
 #run_name=grpo_omni_3b
-run_name=grpo_omni_7b
+#run_name=grpo_omni_7b
+run_name=opd_qwen_audio_teacher_3b
 dir=exp/${run_name}
-# model_name_or_path=/workspace_yuekai/HF/Qwen2-Audio-7B-Instruct
+model_name_or_path=/workspace_yuekai/HF/Qwen2-Audio-7B-Instruct
 # model_name_or_path=/workspace_yuekai/HF/Qwen2.5-Omni-3B
-model_name_or_path=/workspace_yuekai/HF/Qwen2.5-Omni-7B
+# model_name_or_path=/workspace_yuekai/HF/Qwen2.5-Omni-7B
 hf_dataset_path=/workspace_yuekai/HF/avqa-processed
 
 export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
@@ -42,6 +43,7 @@ if [ $stage == "train" ] || [ $stage == "all" ]; then
 fi
 
 if [ $stage == "opd" ]; then
+    teacher_model_name_or_path=/workspace_yuekai/asr/west_rl/examples/grpo/exp/grpo_omni_3b/checkpoint-300
     torchrun --nproc_per_node=${num_gpus} \
         --nnodes=1 \
         --node-rank=0 \
