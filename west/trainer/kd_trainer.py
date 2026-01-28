@@ -220,12 +220,12 @@ class KnowledgeDistillationTrainer(Trainer):
         """Compute GRPO loss for a batch of inputs."""
         # Extract meta_data for reward computation
         meta_data = inputs.pop("meta_data")
-        original_prompts = meta_data[1]
+        original_prompts, audios = meta_data[1], meta_data[2]
 
         # Step 1: Generate completions
         generated_strs, generated_ids, generated_mask = self._rollout(model, inputs)
 
-        teacher_inputs = self._prepare_teacher_logprob_inputs(original_prompts, generated_strs, self.teacher_model_processor)
+        teacher_inputs = self._prepare_teacher_logprob_inputs(original_prompts, generated_strs, self.teacher_model_processor, audios)
         teacher_per_token_logps = self._compute_logprobs(self.teacher_model, teacher_inputs)
         # exclude the teacher prompt length from the logps
         # TODO: implement this

@@ -166,7 +166,7 @@ class HFAudioDataset(Dataset):
             "feature_attention_mask": processed["feature_attention_mask"],
             # Raw data for reward functions, e.g. could put label here
             # prompts for on policy distillation
-            "meta_data": [solutions, prompts],
+            "meta_data": [solutions, prompts, audios],
         }
 
 
