@@ -47,7 +47,7 @@ def _parse_hf_question(question_text):
 
 def _handle_hf_item(item, sample_rate=16000, prompt_template=DEFAULT_PROMPT_TEMPLATE):
     """
-    Convert a HF dataset item to the format expected by the trainer.
+    Convert a HF dataset item (AVQA format) to the format expected by the trainer.
 
     Returns:
         audio: numpy array (resampled)
@@ -87,6 +87,58 @@ def _handle_hf_item(item, sample_rate=16000, prompt_template=DEFAULT_PROMPT_TEMP
     }
 
 
+def _handle_hf_item_mmsu(item, sample_rate=16000, prompt_template=DEFAULT_PROMPT_TEMPLATE):
+    """
+    Convert a MMSU dataset item to the format expected by the trainer.
+
+    MMSU format:
+        - audio: dict with path, array, sampling_rate
+        - key: identifier
+        - question: the question text
+        - category: category of the question
+        - answer_index: index of correct answer in options (0-based)
+        - options: list of answer options
+
+    Returns:
+        audio: numpy array (resampled)
+        prompt: conversation format for chat template
+        solution: the correct answer text
+        key: sample identifier
+        category: question category
+    """
+    # Extract and resample audio
+    audio_data = item['audio']
+    audio = audio_data['array']
+    if audio_data['sampling_rate'] != sample_rate:
+        audio = _resample_audio(audio, audio_data['sampling_rate'], sample_rate)
+
+    # Get question and options
+    question = item['question']
+    options = item['options']
+
+    prompt_text = prompt_template.format(question=question, choices=options)
+
+    prompt = [{
+        "role": "user",
+        "content": [
+            {"type": "audio", "audio_url": item['key']},
+            {"type": "text", "text": prompt_text}
+        ]
+    }]
+
+    # Get correct answer from answer_index
+    answer_index = item['answer_index']
+    solution = options[answer_index]
+
+    return {
+        "audio": audio,
+        "prompt": prompt,
+        "solution": solution,
+        "key": item['key'],
+        "category": item['category'],
+    }
+
+
 class HFAudioDataset(Dataset):
     """
     Dataset class that loads audio data from a HuggingFace dataset.
@@ -106,14 +158,21 @@ class HFAudioDataset(Dataset):
         self.max_prompt_length = max_prompt_length
         self.prompt_template = prompt_template
         self.dataset = load_dataset(dataset_path, split=split)
-        logging.info(f"Loaded HF dataset from {dataset_path}, len: {len(self.dataset)}, sample_rate: {sample_rate}")
+
+        # Detect dataset type based on columns
+        self.is_mmsu = 'options' in self.dataset.column_names
+        dataset_type = "MMSU" if self.is_mmsu else "AVQA"
+        logging.info(f"Loaded HF dataset from {dataset_path}, type: {dataset_type}, len: {len(self.dataset)}, sample_rate: {sample_rate}")
 
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, index):
         item = self.dataset[index]
-        return _handle_hf_item(item, self.sample_rate, self.prompt_template)
+        if self.is_mmsu:
+            return _handle_hf_item_mmsu(item, self.sample_rate, self.prompt_template)
+        else:
+            return _handle_hf_item(item, self.sample_rate, self.prompt_template)
 
     def collate_fn(self, batch: list[dict[str, Any]]) -> dict[str, Any]:
         """
@@ -122,6 +181,7 @@ class HFAudioDataset(Dataset):
         Returns a dict containing:
             - input_ids, attention_mask, input_features, feature_attention_mask (tensors)
             - prompts, solutions, etc. (raw data for reward functions)
+            - For MMSU: also includes keys and categories in meta_data
         """
         # Extract raw data (needed for reward functions)
         prompts = [item["prompt"] for item in batch]
@@ -158,6 +218,14 @@ class HFAudioDataset(Dataset):
             input_ids = input_ids[:, -self.max_prompt_length:]
             attention_mask = attention_mask[:, -self.max_prompt_length:]
 
+        # Build meta_data based on dataset type
+        if self.is_mmsu:
+            keys = [item["key"] for item in batch]
+            categories = [item["category"] for item in batch]
+            meta_data = [solutions, prompts, audios, keys, categories]
+        else:
+            meta_data = [solutions, prompts, audios]
+
         return {
             # Tensor inputs for model
             "input_ids": input_ids,
@@ -166,7 +234,7 @@ class HFAudioDataset(Dataset):
             "feature_attention_mask": processed["feature_attention_mask"],
             # Raw data for reward functions, e.g. could put label here
             # prompts for on policy distillation
-            "meta_data": [solutions, prompts, audios],
+            "meta_data": meta_data,
         }
 
 
@@ -347,7 +415,8 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    HF_DATASET_PATH = "/workspace_yuekai/HF/avqa-processed"
+    # HF_DATASET_PATH = "/workspace_yuekai/HF/avqa-processed"
+    HF_DATASET_PATH = "/workspace_yuekai/HF/MMSU_hf"
     MODEL_PATH = "/workspace_yuekai/HF/Qwen2-Audio-7B-Instruct"
     MODEL_PATH = "/workspace_yuekai/HF/Qwen2.5-Omni-3B"
     SFT_JSON_PATH = "/workspace_yuekai/asr/r1-aqa/avqa_new.json"
