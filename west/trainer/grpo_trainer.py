@@ -265,9 +265,10 @@ class GRPOTrainer(Trainer):
         per_token_kl: torch.Tensor,
     ):
         """Log training metrics."""
-        self._metrics["completion_length"].append(
-            self.accelerator.gather_for_metrics(generated_mask.sum(1)).float().mean().item()
-        )
+        completion_lengths = self.accelerator.gather_for_metrics(generated_mask.sum(1)).float()
+        self._metrics["completion_length"].append(completion_lengths.mean().item())
+        self._metrics["completion_length_min"].append(completion_lengths.min().item())
+        self._metrics["completion_length_max"].append(completion_lengths.max().item())
 
         for i, reward_func in enumerate(self.reward_funcs):
             func_name = reward_func.__name__

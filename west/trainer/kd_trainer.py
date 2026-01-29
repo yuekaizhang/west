@@ -474,9 +474,10 @@ class KnowledgeDistillationTrainer(Trainer):
         rewards_per_func: Optional[torch.Tensor] = None,
     ):
         """Log training metrics."""
-        self._metrics["completion_length"].append(
-            self.accelerator.gather_for_metrics(generated_mask.sum(1)).float().mean().item()
-        )
+        completion_lengths = self.accelerator.gather_for_metrics(generated_mask.sum(1)).float()
+        self._metrics["completion_length"].append(completion_lengths.mean().item())
+        self._metrics["completion_length_min"].append(completion_lengths.min().item())
+        self._metrics["completion_length_max"].append(completion_lengths.max().item())
 
         mean_kl = ((per_token_kl * generated_mask).sum(dim=1) / generated_mask.sum(dim=1)).mean()
         self._metrics["kl"].append(self.accelerator.gather_for_metrics(mean_kl).mean().item())
