@@ -490,10 +490,10 @@ class KnowledgeDistillationTrainer(Trainer):
                 self.accelerator.gather_for_metrics(total_rewards).mean().item()
             )
             # Log individual reward function values
-            for i in range(rewards_per_func.shape[1]):
-                self._metrics[f"reward_func_{i}"].append(
-                    self.accelerator.gather_for_metrics(rewards_per_func[:, i]).mean().item()
-                )
+            for i, reward_func in enumerate(self.reward_funcs):
+                func_name = reward_func.__name__
+                mean_reward = self.accelerator.gather_for_metrics(rewards_per_func[:, i]).mean().item()
+                self._metrics[f"rewards/{func_name}"].append(mean_reward)
 
     # ==================== Main Training Loop ====================
 
