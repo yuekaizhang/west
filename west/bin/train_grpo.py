@@ -19,7 +19,8 @@ from transformers import (
 
 from west.dataset.hf_dataset import HFAudioDataset
 from west.trainer.grpo_trainer import GRPOTrainer
-from west.utils.rewards import accuracy_reward, format_reward
+from west.utils.constants import TEMPLATE_MAP
+from west.utils.rewards import accuracy_reward, format_reward, format_reward_answer, format_reward_think
 
 
 @dataclass
@@ -95,6 +96,12 @@ class CustomTrainingArguments(TrainingArguments):
         metadata={"help": "KL penalty coefficient"},
     )
 
+    # Template
+    template: str = field(
+        default="default",
+        metadata={"help": "Prompt template type: default, think, new"},
+    )
+
     # Logging & Saving
     logging_steps: int = field(
         default=1,
@@ -167,21 +174,31 @@ def main():
     processor = AutoProcessor.from_pretrained(args.model_name_or_path)
 
     logging.info(f"Loading dataset from: {args.hf_dataset_path}")
+    prompt_template = TEMPLATE_MAP[args.template]
+    logging.info(f"Using template: {args.template}")
     train_dataset = HFAudioDataset(
         args.hf_dataset_path,
         processor=processor,
         split="train",
         max_prompt_length=args.max_prompt_length,
+        prompt_template=prompt_template,
     )
     eval_dataset = HFAudioDataset(
         args.hf_dataset_path,
         processor=processor,
         split="validation",
         max_prompt_length=args.max_prompt_length,
+        prompt_template=prompt_template,
     )
 
-
-    reward_funcs = [accuracy_reward, format_reward]
+    if args.template == "default":
+        reward_funcs = [accuracy_reward, format_reward]
+        reward_weights = None  # Use equal weights
+    elif args.template == "think":
+        reward_funcs = [accuracy_reward, format_reward_answer, format_reward_think]
+        reward_weights = [0.8, 0.1, 0.1]
+    else:
+        raise ValueError(f"Template {args.template} not supported")
 
     trainer = GRPOTrainer(
         model=model,
@@ -192,6 +209,7 @@ def main():
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         data_collator=train_dataset.collate_fn,
+        reward_weights=reward_weights,
     )
 
     trainer.train()

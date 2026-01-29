@@ -26,9 +26,7 @@ from tqdm import tqdm
 from transformers import AutoProcessor
 from vllm import LLM, SamplingParams
 
-DEFAULT_TEMPLATE = "{question} Please choose the answer from the following options: {choices}. Output the final answer in <answer> </answer>."
-THINK_TEMPLATE = "{question} Please choose the answer from the following options: {choices}. Output the thinking process in <think> </think> and final answer in <answer> </answer>."
-NEW_TEMPLATE = "{question}Select one option from the provided choices.{choices}"
+from west.utils.constants import TEMPLATE_MAP
 
 def extract_answer(output_str: str) -> str:
     """Extract content from <answer> tags in the model output."""
@@ -82,12 +80,7 @@ def _get_prompt(obj_dict, processor, template="default"):
         Formatted prompt string
     """
     # Select template based on type
-    if template == "think":
-        prompt_template = THINK_TEMPLATE
-    elif template == "new":
-        prompt_template = NEW_TEMPLATE
-    else:
-        prompt_template = DEFAULT_TEMPLATE
+    prompt_template = TEMPLATE_MAP.get(template, TEMPLATE_MAP["default"])
 
     # Format the prompt text
     prompt_text = prompt_template.format(

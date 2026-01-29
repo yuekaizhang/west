@@ -53,6 +53,8 @@ class GRPOTrainer(Trainer):
         ref_model: Pre-initialized reference model (for KL penalty)
         processor: Pre-initialized processor for the model
         reward_funcs: List of reward functions (callables)
+        reward_weights: Optional list of weights for each reward function.
+            If None, uses equal weights (1.0 for each function).
         args: GRPOConfig training configuration
         train_dataset: Training dataset
         eval_dataset: Evaluation dataset (optional)
@@ -69,6 +71,7 @@ class GRPOTrainer(Trainer):
         train_dataset: Optional[Union[Dataset, IterableDataset]] = None,
         eval_dataset: Optional[Union[Dataset, IterableDataset]] = None,
         data_collator: Optional[Callable] = None,
+        reward_weights: Optional[list[float]] = None,
     ):
         super().__init__(
             model=model,
@@ -82,6 +85,14 @@ class GRPOTrainer(Trainer):
         set_seed(args.seed, device_specific=True)
 
         self.reward_funcs = reward_funcs if isinstance(reward_funcs, list) else [reward_funcs]
+
+        # Set reward weights: default to equal weights if not provided
+        if reward_weights is None:
+            self.reward_weights = [1.0] * len(self.reward_funcs)
+        else:
+            assert len(reward_weights) == len(self.reward_funcs), \
+                f"reward_weights length ({len(reward_weights)}) must match reward_funcs length ({len(self.reward_funcs)})"
+            self.reward_weights = reward_weights
 
         self.num_generations = args.num_generations
         self.beta = args.beta
@@ -294,7 +305,9 @@ class GRPOTrainer(Trainer):
 
         # Step 3: Compute rewards
         rewards_per_func = self._compute_rewards(generated_strs, meta_data)
-        total_rewards = rewards_per_func.sum(dim=1)
+        # Apply reward weights
+        reward_weights_tensor = torch.tensor(self.reward_weights, device=rewards_per_func.device, dtype=rewards_per_func.dtype)
+        total_rewards = (rewards_per_func * reward_weights_tensor).sum(dim=1)
 
         # Step 4: Compute advantages
         advantages, std_rewards = self._compute_advantages(total_rewards)

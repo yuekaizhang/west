@@ -21,6 +21,7 @@ from transformers import (
 
 from west.dataset.hf_dataset import HFAudioDataset
 from west.trainer.kd_trainer import KnowledgeDistillationTrainer
+from west.utils.constants import TEMPLATE_MAP
 from west.utils.rewards import accuracy_reward, format_reward
 
 
@@ -95,6 +96,13 @@ class CustomTrainingArguments(TrainingArguments):
         default=64,
         metadata={"help": "Top-k logits for distillation. None = full vocabulary, 64 is a common choice"},
     )
+
+    # Template
+    template: str = field(
+        default="default",
+        metadata={"help": "Prompt template type: default, think, new"},
+    )
+
     # Logging & Saving
     logging_steps: int = field(
         default=1,
@@ -169,17 +177,21 @@ def main():
         )
     else:
         raise ValueError(f"Teacher model {args.teacher_model_name_or_path} not supported")
+    prompt_template = TEMPLATE_MAP[args.template]
+    logging.info(f"Using template: {args.template}")
     train_dataset = HFAudioDataset(
         args.hf_dataset_path,
         processor=processor,
         split="train",
         max_prompt_length=args.max_prompt_length,
+        prompt_template=prompt_template,
     )
     eval_dataset = HFAudioDataset(
         args.hf_dataset_path,
         processor=processor,
         split="validation",
         max_prompt_length=args.max_prompt_length,
+        prompt_template=prompt_template,
     )
     # Reward functions for monitoring (not used in loss, only for logging)
     reward_funcs = [accuracy_reward, format_reward]
