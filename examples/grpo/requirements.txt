@@ -1,9 +1,9 @@
-soundfile==0.12.1
-transformers
-peft==0.14.0
-deepspeed==0.16.3
-trl==0.15.2
-wandb==0.19.8
-tabulate==0.9.0
+soundfile
+transformers>=4.55.0
+deepspeed
+trl
+wandb
+tabulate
 tensorboardX
 datasets==3.1.0
+vllm
