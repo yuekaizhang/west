@@ -70,7 +70,7 @@ fi
 if [ $stage == "decode" ] || [ $stage == "all" ]; then
     export VLLM_WORKER_MULTIPROC_METHOD=spawn
     mmau_dir=data/MMAU
-    iters=(200)
+    iters=(600 100)
     batch_size=32
     for iter in ${iters[*]}; do
         model_dir=${dir}/checkpoint-${iter}
@@ -130,10 +130,10 @@ fi
 if [ $stage == "mmsu" ]; then
     # yuantuo666/MMSU-full_5k_hf_format.v0
     export VLLM_WORKER_MULTIPROC_METHOD=spawn
-    dir=exp/grpo_qwen2_audio
-    iters=(0 400)
+    dir=exp/grpo_qwen_audio_sft_think
+    iters=(600 500)
     batch_size=32
-    template=default
+    template=think
     for iter in ${iters[*]}; do
         model_dir=${dir}/checkpoint-${iter}
         out_dir=${dir}/mmsu_checkpoint_${iter}_vllm_template_${template}
@@ -143,6 +143,7 @@ if [ $stage == "mmsu" ]; then
         --hf_dataset_path /workspace_yuekai/HF/MMSU_hf \
         --out_file ${out_dir}/res_mmsu.json \
         --template ${template} --force \
+        --max_audio_duration_in_seconds 30 \
         --batch_size ${batch_size} || exit 1
     done
 fi

@@ -87,7 +87,7 @@ def _handle_hf_item(item, sample_rate=16000, prompt_template=DEFAULT_PROMPT_TEMP
     }
 
 
-def _handle_hf_item_mmsu(item, sample_rate=16000, prompt_template=DEFAULT_PROMPT_TEMPLATE):
+def _handle_hf_item_mmsu(item, sample_rate=16000, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_audio_duration_in_seconds=None):
     """
     Convert a MMSU dataset item to the format expected by the trainer.
 
@@ -111,6 +111,9 @@ def _handle_hf_item_mmsu(item, sample_rate=16000, prompt_template=DEFAULT_PROMPT
     audio = audio_data['array']
     if audio_data['sampling_rate'] != sample_rate:
         audio = _resample_audio(audio, audio_data['sampling_rate'], sample_rate)
+
+    if max_audio_duration_in_seconds is not None:
+        audio = audio[:int(max_audio_duration_in_seconds * sample_rate)]
 
     # Get question and options
     question = item['question']
@@ -151,7 +154,14 @@ class HFAudioDataset(Dataset):
         max_prompt_length: Maximum length for prompt tokens (truncates from left if exceeded)
     """
 
-    def __init__(self, dataset_path, processor, sample_rate=16000, split=None, max_prompt_length=None, prompt_template=DEFAULT_PROMPT_TEMPLATE):
+    def __init__(self, 
+                 dataset_path, 
+                 processor, 
+                 sample_rate=16000, 
+                 split=None, 
+                 max_prompt_length=None, 
+                 prompt_template=DEFAULT_PROMPT_TEMPLATE,
+                 max_audio_duration_in_seconds=None):
         super().__init__()
         self.sample_rate = sample_rate
         self.processor = processor
@@ -162,6 +172,7 @@ class HFAudioDataset(Dataset):
         # Detect dataset type based on columns
         self.is_mmsu = 'options' in self.dataset.column_names
         dataset_type = "MMSU" if self.is_mmsu else "AVQA"
+        self.max_audio_duration_in_seconds = max_audio_duration_in_seconds
         logging.info(f"Loaded HF dataset from {dataset_path}, type: {dataset_type}, len: {len(self.dataset)}, sample_rate: {sample_rate}")
 
     def __len__(self):
@@ -170,7 +181,7 @@ class HFAudioDataset(Dataset):
     def __getitem__(self, index):
         item = self.dataset[index]
         if self.is_mmsu:
-            return _handle_hf_item_mmsu(item, self.sample_rate, self.prompt_template)
+            return _handle_hf_item_mmsu(item, self.sample_rate, self.prompt_template, self.max_audio_duration_in_seconds)
         else:
             return _handle_hf_item(item, self.sample_rate, self.prompt_template)
 

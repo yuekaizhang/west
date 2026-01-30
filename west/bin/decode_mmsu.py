@@ -157,6 +157,7 @@ def parse_args():
     parser.add_argument("--max_model_len", type=int, default=8000, help="Max model length for vLLM")
     parser.add_argument("--template", type=str, default="default", choices=["default", "think", "new"],
                         help="Prompt template type")
+    parser.add_argument("--max_audio_duration_in_seconds", type=float, default=None, help="Max audio duration in seconds")
     return parser.parse_args()
 
 
@@ -191,6 +192,7 @@ def main():
         processor=processor,
         split=args.split,
         prompt_template=prompt_template,
+        max_audio_duration_in_seconds=args.max_audio_duration_in_seconds,
     )
 
     # Limit samples if specified

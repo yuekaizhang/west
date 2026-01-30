@@ -79,7 +79,7 @@ class CustomTrainingArguments(TrainingArguments):
         metadata={"help": "Maximum prompt length for generation"},
     )
     max_completion_length: int = field(
-        default=256,
+        default=1024,
         metadata={"help": "Maximum completion length for generation"},
     )
     num_generations: int = field(
@@ -137,10 +137,7 @@ class CustomTrainingArguments(TrainingArguments):
         default=True,
         metadata={"help": "Use bfloat16 precision"},
     )
-    gradient_checkpointing: bool = field(
-        default=False,
-        metadata={"help": "Enable gradient checkpointing"},
-    )
+
 def main():
     parser = HfArgumentParser(CustomTrainingArguments)
     args = parser.parse_args_into_dataclasses()[0]
@@ -160,14 +157,10 @@ def main():
         model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
             args.model_name_or_path,
             enable_audio_output=False,
-            # torch_dtype="auto",
-            # attn_implementation="flash_attention_2",
         )
         ref_model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
             args.model_name_or_path,
             enable_audio_output=False,
-            # torch_dtype="auto",
-            # attn_implementation="flash_attention_2",
         )
     else:
         raise ValueError(f"Model {args.model_name_or_path} not supported")

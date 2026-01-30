@@ -138,10 +138,7 @@ class CustomTrainingArguments(TrainingArguments):
         default=True,
         metadata={"help": "Use bfloat16 precision"},
     )
-    gradient_checkpointing: bool = field(
-        default=False,
-        metadata={"help": "Enable gradient checkpointing"},
-    )
+
 def main():
     parser = HfArgumentParser(CustomTrainingArguments)
     args = parser.parse_args_into_dataclasses()[0]
@@ -160,14 +157,9 @@ def main():
         model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
             args.model_name_or_path,
             enable_audio_output=False,
-            # torch_dtype="auto",
-            # attn_implementation="flash_attention_2",
         )
     else:
         raise ValueError(f"Model {args.model_name_or_path} not supported")
-    processor = AutoProcessor.from_pretrained(args.model_name_or_path)
-    teacher_processor = AutoProcessor.from_pretrained(args.teacher_model_name_or_path)
-    logging.info(f"Loading dataset from: {args.hf_dataset_path}")
     if "Qwen2-Audio-7B-Instruct" in args.teacher_model_name_or_path:
         teacher_model = Qwen2AudioForConditionalGeneration.from_pretrained(args.teacher_model_name_or_path)
     elif "Qwen2.5-Omni" in args.teacher_model_name_or_path or "omni" in args.teacher_model_name_or_path:
@@ -177,6 +169,10 @@ def main():
         )
     else:
         raise ValueError(f"Teacher model {args.teacher_model_name_or_path} not supported")
+
+    processor = AutoProcessor.from_pretrained(args.model_name_or_path)
+    teacher_processor = AutoProcessor.from_pretrained(args.teacher_model_name_or_path)
+
     prompt_template = TEMPLATE_MAP[args.template]
     logging.info(f"Using template: {args.template}")
     train_dataset = HFAudioDataset(
