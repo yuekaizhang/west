@@ -13,7 +13,7 @@ stage=train
 
 . tools/parse_options.sh
 
-deepspeed_config=conf/ds_zero3.json
+deepspeed_config=conf/ds_zero1.json
 run_name=grpo_qwen_omni_7b
 prompt_template=default
 dir=exp/${run_name}
