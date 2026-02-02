@@ -16,9 +16,16 @@ from transformers import (AutoProcessor, HfArgumentParser,
                           TrainingArguments)
 
 from west.dataset.hf_dataset import HFAudioDataset
-from west.trainer.kd_trainer import KnowledgeDistillationTrainer
+from west.trainer.kd_trainer import (KnowledgeDistillationTrainer,
+                                     RemoteKnowledgeDistillationTrainer)
 from west.utils.constants import TEMPLATE_MAP
-from west.utils.rewards import accuracy_reward, format_reward
+from west.utils.rewards import (accuracy_reward, format_reward_answer,
+                                format_reward_think)
+
+
+def is_url(path: str) -> bool:
+    """Check if the path is a URL."""
+    return path.startswith("http://") or path.startswith("https://")
 
 
 @dataclass
@@ -81,7 +88,7 @@ class CustomTrainingArguments(TrainingArguments):
         metadata={"help": "Maximum prompt length for generation"},
     )
     max_completion_length: int = field(
-        default=256,
+        default=4096,
         metadata={"help": "Maximum completion length for generation"},
     )
     temperature: float = field(
@@ -148,7 +155,7 @@ def main():
     logging.info(f"Training arguments: {args}")
 
     logging.info(f"Loading model from: {args.model_name_or_path}")
-    if "Qwen2-Audio-7B-Instruct" in args.model_name_or_path:
+    if "Qwen2-Audio-7B-Instruct" in args.model_name_or_path or 'r1-aqa' in args.model_name_or_path:
         model = Qwen2AudioForConditionalGeneration.from_pretrained(args.model_name_or_path)
     elif "Qwen2.5-Omni" in args.model_name_or_path:
         model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
@@ -157,18 +164,28 @@ def main():
         )
     else:
         raise ValueError(f"Model {args.model_name_or_path} not supported")
-    if "Qwen2-Audio-7B-Instruct" in args.teacher_model_name_or_path:
-        teacher_model = Qwen2AudioForConditionalGeneration.from_pretrained(args.teacher_model_name_or_path)
-    elif "Qwen2.5-Omni" in args.teacher_model_name_or_path or "omni" in args.teacher_model_name_or_path:
-        teacher_model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
-            args.teacher_model_name_or_path,
-            enable_audio_output=False,
-        )
-    else:
-        raise ValueError(f"Teacher model {args.teacher_model_name_or_path} not supported")
 
     processor = AutoProcessor.from_pretrained(args.model_name_or_path)
-    teacher_processor = AutoProcessor.from_pretrained(args.teacher_model_name_or_path)
+
+    # Check if teacher is a remote API or local model
+    use_remote_teacher = is_url(args.teacher_model_name_or_path)
+
+    if use_remote_teacher:
+        logging.info(f"Using remote teacher API: {args.teacher_model_name_or_path}")
+        teacher_model = None
+        teacher_processor = None
+    else:
+        logging.info(f"Loading local teacher model from: {args.teacher_model_name_or_path}")
+        if "Qwen2-Audio-7B-Instruct" in args.teacher_model_name_or_path:
+            teacher_model = Qwen2AudioForConditionalGeneration.from_pretrained(args.teacher_model_name_or_path)
+        elif "Qwen2.5-Omni" in args.teacher_model_name_or_path or "omni" in args.teacher_model_name_or_path:
+            teacher_model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
+                args.teacher_model_name_or_path,
+                enable_audio_output=False,
+            )
+        else:
+            raise ValueError(f"Teacher model {args.teacher_model_name_or_path} not supported")
+        teacher_processor = AutoProcessor.from_pretrained(args.teacher_model_name_or_path)
 
     prompt_template = TEMPLATE_MAP[args.template]
     logging.info(f"Using template: {args.template}")
@@ -187,19 +204,37 @@ def main():
         prompt_template=prompt_template,
     )
     # Reward functions for monitoring (not used in loss, only for logging)
-    reward_funcs = [accuracy_reward, format_reward]
+    if args.template == "default":
+        # reward_funcs = [accuracy_reward, format_reward]
+        reward_funcs = [accuracy_reward, format_reward_answer]
+    elif args.template == "think":
+        reward_funcs = [accuracy_reward, format_reward_answer, format_reward_think]
+    else:
+        raise ValueError(f"Template {args.template} not supported")
 
-    trainer = KnowledgeDistillationTrainer(
-        model=model,
-        teacher_model=teacher_model,
-        processor=processor,
-        teacher_model_processor=teacher_processor,
-        args=args,
-        reward_funcs=reward_funcs,
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
-        data_collator=train_dataset.collate_fn,
-    )
+    if use_remote_teacher:
+        trainer = RemoteKnowledgeDistillationTrainer(
+            model=model,
+            teacher_api_base=args.teacher_model_name_or_path,
+            processor=processor,
+            args=args,
+            reward_funcs=reward_funcs,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            data_collator=train_dataset.collate_fn,
+        )
+    else:
+        trainer = KnowledgeDistillationTrainer(
+            model=model,
+            teacher_model=teacher_model,
+            processor=processor,
+            teacher_model_processor=teacher_processor,
+            args=args,
+            reward_funcs=reward_funcs,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            data_collator=train_dataset.collate_fn,
+        )
 
     trainer.train()
 
