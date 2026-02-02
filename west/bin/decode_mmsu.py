@@ -7,29 +7,29 @@ Uses HFAudioDataset to load and process the data.
 
 # Must set environment variables before any imports that might initialize CUDA
 import os
+
 os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
 
 # Also set multiprocessing start method
-import multiprocessing
+import multiprocessing  # noqa: E402
+
 try:
     multiprocessing.set_start_method('spawn', force=True)
 except RuntimeError:
     pass  # Already set
 
-import argparse
-import json
-import logging
-import re
+import argparse  # noqa: E402
+import json  # noqa: E402
+import logging  # noqa: E402
+import re  # noqa: E402
+from collections import defaultdict  # noqa: E402
 
-from tqdm import tqdm
-from transformers import AutoProcessor
-from vllm import LLM, SamplingParams
+from tqdm import tqdm  # noqa: E402
+from transformers import AutoProcessor  # noqa: E402
+from vllm import LLM, SamplingParams  # noqa: E402
 
-from west.dataset.hf_dataset import HFAudioDataset
-from west.utils.constants import TEMPLATE_MAP
-
-
-from collections import defaultdict
+from west.dataset.hf_dataset import HFAudioDataset  # noqa: E402
+from west.utils.constants import TEMPLATE_MAP  # noqa: E402
 
 
 def extract_answer(output_str: str) -> str:
@@ -157,7 +157,9 @@ def parse_args():
     parser.add_argument("--max_model_len", type=int, default=8000, help="Max model length for vLLM")
     parser.add_argument("--template", type=str, default="default", choices=["default", "think", "new"],
                         help="Prompt template type")
-    parser.add_argument("--max_audio_duration_in_seconds", type=float, default=None, help="Max audio duration in seconds")
+    parser.add_argument(
+        "--max_audio_duration_in_seconds", type=float, default=None, help="Max audio duration in seconds"
+    )
     return parser.parse_args()
 
 

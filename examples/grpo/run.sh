@@ -18,16 +18,16 @@ run_name=grpo_qwen_omni_7b
 prompt_template=default
 dir=exp/${run_name}
 
-model_name_or_path=/workspace_yuekai/HF/Qwen2.5-Omni-7B
-avqa_hf_dataset_path=/workspace_yuekai/HF/avqa-processed
-mmsu_hf_dataset_path=/workspace_yuekai/HF/MMSU_hf
-mmau_test_mini_data_dir=data/MMAU # This path is hardcoded in the scripts/download_mmau_test.sh.
+model_name_or_path=${MODEL_NAME_OR_PATH:-models/Qwen2.5-Omni-7B}
+avqa_hf_dataset_path=${AVQA_HF_DATASET_PATH:-data/avqa-processed}
+mmsu_hf_dataset_path=${MMSU_HF_DATASET_PATH:-data/MMSU_hf}
+mmau_test_mini_data_dir=${MMAU_TEST_MINI_DATA_DIR:-data/MMAU} # This path is hardcoded in the scripts/download_mmau_test.sh.
 
 if [ $stage == "prepare" ]; then
     echo "Prepare required data and models"
     huggingface-cli download yuantuo666/MMSU-full_5k_hf_format.v0 --local-dir ${mmsu_hf_dataset_path} --repo-type dataset
     huggingface-cli download gijs/avqa-processed --local-dir ${avqa_hf_dataset_path} --repo-type dataset
-    
+
     huggingface-cli download Qwen/Qwen2.5-Omni-7B --local-dir ${model_name_or_path}
     # Qwen/Qwen2-Audio-7B-Instruct, Qwen/Qwen2.5-Omni-3B
 
@@ -71,7 +71,7 @@ if [ $stage == "mmau" ]; then
         --template ${prompt_template} \
         --max_audio_duration_in_seconds 30 \
         --batch_size ${batch_size} || exit 1
-        
+
         python3 ${mmau_test_mini_data_dir}/evaluation.py \
         --input ${out_dir}/res_mmau_mini.json \
         > ${out_dir}/eval_mmau_mini.txt || exit 1

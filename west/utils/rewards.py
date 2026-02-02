@@ -24,7 +24,8 @@ def accuracy_reward(hypos_list, ground_truth_list, **kwargs):
             if pred_answer == ground_truth:
                 reward = 1.0
         except Exception:
-            pass
+            print(f"Error extracting answer from prediction: {prediction}")
+            print(f"Error extracting answer from ground truth: {ground_truth}")
 
         rewards.append(reward)
 
@@ -53,16 +54,20 @@ def format_reward_answer(hypos_list, **kwargs):
     matches = [re.findall(pattern, content, re.DOTALL) for content in completion_contents]
     return [1.0 if len(match) == 1 else 0.0 for match in matches]
 
+
 def format_reward_think(hypos_list, **kwargs):
     pattern = r"<think>.*?</think>"
     completion_contents = [hypo for hypo in hypos_list]
     matches = [re.findall(pattern, content, re.DOTALL) for content in completion_contents]
     return [1.0 if len(match) == 1 else 0.0 for match in matches]
 
+
 if __name__ == "__main__":
     # Test accuracy_reward
-    mock_hypos_list = ["<answer>D. on the tree</answer>"]
-    mock_hypos_list = ["<think>The cat is on the tree</think> <answer>D. on the tree</answer> <think>The cat is on the tree</think>"]
+    mock_hypos_list = [
+        "<think>The cat is on the tree</think> <answer>D. on the tree</answer> "
+        "<think>The cat is on the tree</think>"
+    ]
     mock_ground_truth_list = ["D. on the tree"]
 
     print("Testing accuracy_reward:")

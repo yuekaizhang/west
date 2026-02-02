@@ -8,19 +8,16 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-import transformers
-from transformers import (
-    AutoProcessor,
-    HfArgumentParser,
-    Qwen2AudioForConditionalGeneration,
-    Qwen2_5OmniForConditionalGeneration,
-    TrainingArguments
-)
+from transformers import (AutoProcessor, HfArgumentParser,
+                          Qwen2_5OmniForConditionalGeneration,
+                          Qwen2AudioForConditionalGeneration,
+                          TrainingArguments)
 
 from west.dataset.hf_dataset import HFAudioDataset
 from west.trainer.grpo_trainer import GRPOTrainer
 from west.utils.constants import TEMPLATE_MAP
-from west.utils.rewards import accuracy_reward, format_reward, format_reward_answer, format_reward_think
+from west.utils.rewards import (accuracy_reward, format_reward,
+                                format_reward_answer, format_reward_think)
 
 
 @dataclass
@@ -137,6 +134,7 @@ class CustomTrainingArguments(TrainingArguments):
         default=True,
         metadata={"help": "Use bfloat16 precision"},
     )
+
 
 def main():
     parser = HfArgumentParser(CustomTrainingArguments)

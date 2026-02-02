@@ -27,14 +27,8 @@ import transformers
 from accelerate.utils import set_seed
 from datasets import Dataset, IterableDataset
 from packaging import version
-from transformers import (
-    GenerationConfig,
-    PreTrainedModel,
-    ProcessorMixin,
-    Trainer,
-    TrainingArguments,
-)
-
+from transformers import (GenerationConfig, PreTrainedModel, ProcessorMixin,
+                          Trainer, TrainingArguments)
 from trl.models import prepare_deepspeed, unwrap_model_for_generation
 from trl.trainer.utils import selective_log_softmax
 
@@ -90,8 +84,10 @@ class GRPOTrainer(Trainer):
         if reward_weights is None:
             self.reward_weights = [1.0] * len(self.reward_funcs)
         else:
-            assert len(reward_weights) == len(self.reward_funcs), \
-                f"reward_weights length ({len(reward_weights)}) must match reward_funcs length ({len(self.reward_funcs)})"
+            assert len(reward_weights) == len(self.reward_funcs), (
+                f"reward_weights length ({len(reward_weights)}) "
+                f"must match reward_funcs length ({len(self.reward_funcs)})"
+            )
             self.reward_weights = reward_weights
 
         self.num_generations = args.num_generations
@@ -307,7 +303,9 @@ class GRPOTrainer(Trainer):
         # Step 3: Compute rewards
         rewards_per_func = self._compute_rewards(generated_strs, meta_data)
         # Apply reward weights
-        reward_weights_tensor = torch.tensor(self.reward_weights, device=rewards_per_func.device, dtype=rewards_per_func.dtype)
+        reward_weights_tensor = torch.tensor(
+            self.reward_weights, device=rewards_per_func.device, dtype=rewards_per_func.dtype
+        )
         total_rewards = (rewards_per_func * reward_weights_tensor).sum(dim=1)
 
         # Step 4: Compute advantages

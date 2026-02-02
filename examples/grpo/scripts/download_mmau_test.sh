@@ -20,7 +20,7 @@ echo "Downloading ${FILENAME} from Google Drive..."
 
 if [ -f "$FILENAME" ]; then
     echo " -> File already exists. Skipping download."
-else 
+else
     wget --quiet --show-progress \
         --no-check-certificate \
         --no-clobber \

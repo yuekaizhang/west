@@ -1,4 +1,3 @@
-import json
 import logging
 import re
 from typing import Any
@@ -8,7 +7,9 @@ import torch
 import torchaudio
 from datasets import load_dataset
 from torch.utils.data import Dataset
+
 from west.utils.constants import TEMPLATE_MAP
+
 
 def _resample_audio(audio_array, orig_sr, target_sr=16000):
     """Resample audio to target sample rate."""
@@ -23,6 +24,7 @@ def _resample_audio(audio_array, orig_sr, target_sr=16000):
     resampler = torchaudio.transforms.Resample(orig_freq=orig_sr, new_freq=target_sr)
     resampled = resampler(waveform)
     return resampled[0].numpy()
+
 
 def _handle_hf_item_avqa(item, sample_rate=16000, prompt_template=TEMPLATE_MAP["default"]):
     """
@@ -83,7 +85,9 @@ def _handle_hf_item_avqa(item, sample_rate=16000, prompt_template=TEMPLATE_MAP["
     }
 
 
-def _handle_hf_item_mmsu(item, sample_rate=16000, prompt_template=TEMPLATE_MAP["default"], max_audio_duration_in_seconds=None):
+def _handle_hf_item_mmsu(
+    item, sample_rate=16000, prompt_template=TEMPLATE_MAP["default"], max_audio_duration_in_seconds=None
+):
     """
     Convert a MMSU dataset item to the format expected by the trainer.
 
@@ -150,12 +154,12 @@ class HFAudioDataset(Dataset):
         max_prompt_length: Maximum length for prompt tokens (truncates from left if exceeded)
     """
 
-    def __init__(self, 
-                 dataset_path, 
-                 processor, 
-                 sample_rate=16000, 
-                 split=None, 
-                 max_prompt_length=None, 
+    def __init__(self,
+                 dataset_path,
+                 processor,
+                 sample_rate=16000,
+                 split=None,
+                 max_prompt_length=None,
                  prompt_template=TEMPLATE_MAP["default"],
                  max_audio_duration_in_seconds=None):
         super().__init__()
@@ -169,7 +173,10 @@ class HFAudioDataset(Dataset):
         self.is_mmsu = 'options' in self.dataset.column_names
         dataset_type = "MMSU" if self.is_mmsu else "AVQA"
         self.max_audio_duration_in_seconds = max_audio_duration_in_seconds
-        logging.info(f"Loaded HF dataset from {dataset_path}, type: {dataset_type}, len: {len(self.dataset)}, sample_rate: {sample_rate}")
+        logging.info(
+            f"Loaded HF dataset from {dataset_path}, type: {dataset_type}, "
+            f"len: {len(self.dataset)}, sample_rate: {sample_rate}"
+        )
 
     def __len__(self):
         return len(self.dataset)
@@ -177,7 +184,9 @@ class HFAudioDataset(Dataset):
     def __getitem__(self, index):
         item = self.dataset[index]
         if self.is_mmsu:
-            return _handle_hf_item_mmsu(item, self.sample_rate, self.prompt_template, self.max_audio_duration_in_seconds)
+            return _handle_hf_item_mmsu(
+                item, self.sample_rate, self.prompt_template, self.max_audio_duration_in_seconds
+            )
         else:
             return _handle_hf_item_avqa(item, self.sample_rate, self.prompt_template)
 
@@ -242,8 +251,10 @@ class HFAudioDataset(Dataset):
             "meta_data": meta_data,
         }
 
+
 if __name__ == "__main__":
     import argparse
+
     from transformers import AutoProcessor
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

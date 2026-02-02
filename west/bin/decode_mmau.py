@@ -6,27 +6,30 @@ Qwen2-Audio models with vLLM for efficient batch processing.
 
 # Must set environment variables before any imports that might initialize CUDA
 import os
+
 os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
 
 # Also set multiprocessing start method
-import multiprocessing
+import multiprocessing  # noqa: E402
+
 try:
     multiprocessing.set_start_method('spawn', force=True)
 except RuntimeError:
     pass  # Already set
 
-import argparse
-import json
-import logging
-import os
-import re
+import argparse  # noqa: E402
+import json  # noqa: E402
+import logging  # noqa: E402
+import os  # noqa: E402
+import re  # noqa: E402
 
-import torchaudio
-from tqdm import tqdm
-from transformers import AutoProcessor
-from vllm import LLM, SamplingParams
+import torchaudio  # noqa: E402
+from tqdm import tqdm  # noqa: E402
+from transformers import AutoProcessor  # noqa: E402
+from vllm import LLM, SamplingParams  # noqa: E402
 
-from west.utils.constants import TEMPLATE_MAP
+from west.utils.constants import TEMPLATE_MAP  # noqa: E402
+
 
 def extract_answer(output_str: str) -> str:
     """Extract content from <answer> tags in the model output."""
@@ -52,7 +55,9 @@ def parse_args():
     parser.add_argument("--max_new_tokens", type=int, default=2048, help="max new tokens for generation")
     parser.add_argument("--temperature", type=float, default=0.0, help="temperature for generation")
     parser.add_argument("--max_audio_duration_in_seconds", type=int, default=30, help="max audio duration in seconds")
-    parser.add_argument("--template", type=str, default="default", choices=["default", "think", "new"], help="prompt template type")
+    parser.add_argument(
+        "--template", type=str, default="default", choices=["default", "think", "new"], help="prompt template type"
+    )
     return parser.parse_args()
 
 
@@ -146,7 +151,7 @@ def main():
     batch_size = args.batch_size
 
     for i in tqdm(range(0, len(datas), batch_size)):
-        batch_data = datas[i : i + batch_size]
+        batch_data = datas[i:i + batch_size]
 
         batch_inputs = []
         for bd in batch_data:
