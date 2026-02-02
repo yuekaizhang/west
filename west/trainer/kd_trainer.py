@@ -21,11 +21,21 @@ Implements on-policy distillation where:
 3. Student learns to match teacher's distribution on its own samples
 
 This avoids distribution shift problems of off-policy distillation.
+
+Supports two modes:
+- Local teacher: Teacher model loaded locally
+- Remote teacher: Teacher model accessed via API (e.g., vLLM server)
 """
 
+import base64
+import io
+import logging
 from collections import defaultdict
 from typing import Callable, Optional, Union
 
+import numpy as np
+import requests
+import soundfile as sf
 import torch
 import torch.nn.functional as F
 import transformers
@@ -479,14 +489,18 @@ class KnowledgeDistillationTrainer(Trainer):
         # Log rewards if available
         if rewards_per_func is not None:
             total_rewards = rewards_per_func.sum(dim=1)
-            self._metrics["reward"].append(
-                self.accelerator.gather_for_metrics(total_rewards).mean().item()
-            )
+            gathered_total_rewards = self.accelerator.gather_for_metrics(total_rewards)
+            self._metrics["reward"].append(gathered_total_rewards.mean().item())
+            self._metrics["reward_min"].append(gathered_total_rewards.min().item())
+            self._metrics["reward_max"].append(gathered_total_rewards.max().item())
             # Log individual reward function values
             for i, reward_func in enumerate(self.reward_funcs):
                 func_name = reward_func.__name__
-                mean_reward = self.accelerator.gather_for_metrics(rewards_per_func[:, i]).mean().item()
-                self._metrics[f"rewards/{func_name}"].append(mean_reward)
+                gathered_rewards = self.accelerator.gather_for_metrics(rewards_per_func[:, i])
+                print(f"gathered_rewards: {gathered_rewards}", f"func_name: {func_name}", "*"*100)
+                self._metrics[f"rewards/{func_name}"].append(gathered_rewards.mean().item())
+                self._metrics[f"rewards/{func_name}_min"].append(gathered_rewards.min().item())
+                self._metrics[f"rewards/{func_name}_max"].append(gathered_rewards.max().item())
 
     # ==================== Main Training Loop ====================
 
@@ -584,3 +598,491 @@ class KnowledgeDistillationTrainer(Trainer):
             super().log(logs)
 
         self._metrics.clear()
+
+
+class RemoteKnowledgeDistillationTrainer(KnowledgeDistillationTrainer):
+    """
+    Trainer for On-Policy Knowledge Distillation with Remote Teacher API.
+
+    Instead of loading teacher model locally, this trainer calls a remote API
+    (e.g., vLLM server) to get teacher's top-k logprobs.
+
+    The training loop:
+    1. Student generates completions from prompts (on-policy)
+    2. Teacher API returns top-k logprobs for student's completions
+    3. Student learns to match teacher's distribution via KL divergence
+
+    Args:
+        model: Pre-initialized student model
+        teacher_api_base: URL of the teacher API (e.g., "http://localhost:8000/v1")
+        processor: Pre-initialized processor for the student model
+        reward_funcs: Optional list of reward functions for monitoring
+        args: Training configuration
+        train_dataset: Training dataset
+        eval_dataset: Evaluation dataset (optional)
+        data_collator: Collate function from dataset
+    """
+
+    def __init__(
+        self,
+        model: PreTrainedModel,
+        teacher_api_base: str,
+        processor: ProcessorMixin,
+        args: TrainingArguments,
+        reward_funcs: Optional[Union[RewardFunc, list[RewardFunc]]] = None,
+        train_dataset: Optional[Union[Dataset, IterableDataset]] = None,
+        eval_dataset: Optional[Union[Dataset, IterableDataset]] = None,
+        data_collator: Optional[Callable] = None,
+    ):
+        # Initialize parent Trainer directly, not KnowledgeDistillationTrainer
+        # since we don't have a local teacher model
+        Trainer.__init__(
+            self,
+            model=model,
+            args=args,
+            data_collator=data_collator,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            processing_class=processor,
+        )
+
+        set_seed(args.seed, device_specific=True)
+
+        self.num_generations = 1
+        self.topk_logits_k = args.topk_logits_k
+
+        if reward_funcs is not None:
+            self.reward_funcs = reward_funcs if isinstance(reward_funcs, list) else [reward_funcs]
+        else:
+            self.reward_funcs = []
+
+        self.model_accepts_loss_kwargs = False
+        self._metrics = defaultdict(list)
+
+        self.generation_config = GenerationConfig(
+            max_new_tokens=args.max_completion_length,
+            do_sample=True,
+            temperature=args.temperature,
+            num_return_sequences=self.num_generations,
+            pad_token_id=processor.tokenizer.pad_token_id,
+        )
+
+        # Remote teacher API setup
+        self.teacher_api_base = teacher_api_base
+        self.teacher_model_name = self._get_teacher_model_name()
+        logging.info(f"Remote teacher API: {teacher_api_base}")
+        logging.info(f"Teacher model: {self.teacher_model_name}")
+
+        # No local teacher model
+        self.teacher_model = None
+        self.teacher_model_processor = None
+
+    def _get_teacher_model_name(self) -> str:
+        """Get the teacher model name from the API."""
+        try:
+            response = requests.get(f"{self.teacher_api_base}/models")
+            response.raise_for_status()
+            models = response.json()
+            return models["data"][0]["id"]
+        except Exception as e:
+            logging.warning(f"Failed to get teacher model name: {e}")
+            return "unknown"
+
+    @staticmethod
+    def _encode_audio_to_base64(audio_array: np.ndarray, sample_rate: int = 16000) -> str:
+        """Encode a numpy audio array to base64 WAV format."""
+        buffer = io.BytesIO()
+        sf.write(buffer, audio_array, sample_rate, format='WAV')
+        buffer.seek(0)
+        audio_data = buffer.read()
+        return base64.b64encode(audio_data).decode("utf-8")
+
+    def _build_prompt_from_meta(self, original_prompt: list) -> list:
+        """Build prompt in the format expected by the teacher API."""
+        text_content = ""
+        for msg in original_prompt:
+            if msg.get("role") == "user":
+                content = msg.get("content", [])
+                if isinstance(content, list):
+                    for item in content:
+                        if item.get("type") == "text":
+                            text_content = item.get("text", "")
+                            break
+                elif isinstance(content, str):
+                    text_content = content
+
+        return [{
+            "role": "user",
+            "content": [
+                {"type": "audio", "audio_url": "audio_data"},
+                {"type": "text", "text": text_content}
+            ]
+        }]
+
+    def _call_teacher_api(
+        self,
+        prompt: list,
+        audio_array: np.ndarray,
+        answer_text: str,
+        top_k: int = 64,
+        sample_rate: int = 16000,
+    ) -> dict:
+        """
+        Call Teacher API with audio and get response with prompt_logprobs.
+
+        Args:
+            prompt: Prompt messages
+            audio_array: Audio data as numpy array
+            answer_text: Student's generated completion (prefill for teacher)
+            top_k: Number of top-k logprobs to return
+            sample_rate: Audio sample rate
+
+        Returns:
+            dict with topk_indices, topk_logprobs, actual_ids, actual_tokens, seq_len
+        """
+        audio_base64 = self._encode_audio_to_base64(audio_array, sample_rate)
+
+        # Build messages
+        messages = []
+        for msg in prompt:
+            new_msg = {"role": msg["role"]}
+            if isinstance(msg.get("content"), list):
+                new_content = []
+                for item in msg["content"]:
+                    if item.get("type") == "audio" or "audio_url" in item:
+                        new_content.append({
+                            "type": "input_audio",
+                            "input_audio": {"data": audio_base64, "format": "wav"}
+                        })
+                    elif item.get("type") == "text":
+                        new_content.append({"type": "text", "text": item.get("text", "")})
+                    else:
+                        new_content.append(item)
+                new_msg["content"] = new_content
+            else:
+                new_msg["content"] = msg.get("content", "")
+            messages.append(new_msg)
+
+        # Append assistant message with answer_text
+        messages.append({"role": "assistant", "content": answer_text})
+
+        # Build payload
+        payload = {
+            "model": self.teacher_model_name,
+            "messages": messages,
+            "stream": False,
+            "max_tokens": 1,
+            "temperature": 0.7,
+            "prompt_logprobs": top_k,
+        }
+
+        # Send request
+        headers = {"Content-Type": "application/json"}
+        response = requests.post(
+            f"{self.teacher_api_base}/chat/completions",
+            headers=headers,
+            json=payload
+        )
+        response.raise_for_status()
+
+        result = response.json()
+        return self._extract_assistant_logprobs(result, answer_text)
+
+    def _extract_assistant_logprobs(self, result: dict, assistant_content: str) -> dict:
+        """
+        Extract top-k logprobs for the assistant's prefill content.
+
+        The actual token at each position is the FIRST token in the JSON dict.
+
+        Returns:
+            dict with topk_indices, topk_logprobs, actual_ids, actual_tokens, seq_len
+        """
+        prompt_logprobs = result.get("prompt_logprobs", [])
+
+        # Build token sequence from prompt_logprobs
+        token_sequence = []
+        for pos, logprob_dict in enumerate(prompt_logprobs):
+            if logprob_dict is None:
+                token_sequence.append({
+                    "pos": pos, "token_id": None, "token": None,
+                    "logprob_dict": None, "all_tokens": []
+                })
+                continue
+
+            all_tokens = []
+            actual_token_id = None
+            actual_token = None
+
+            for idx, (token_id, info) in enumerate(logprob_dict.items()):
+                token_info = {
+                    "token_id": int(token_id),
+                    "token": info["decoded_token"],
+                    "logprob": info["logprob"],
+                    "rank": info.get("rank", 0)
+                }
+                all_tokens.append(token_info)
+                # First token in dict is the actual token
+                if idx == 0:
+                    actual_token_id = int(token_id)
+                    actual_token = info["decoded_token"]
+
+            token_sequence.append({
+                "pos": pos, "token_id": actual_token_id, "token": actual_token,
+                "logprob_dict": logprob_dict, "all_tokens": all_tokens
+            })
+
+        # Find assistant content by marker
+        accumulated = "".join([t["token"] for t in token_sequence if t["token"]])
+        # TODO: fix me: the assistant marker is hardcoded, should be configurable
+        assistant_markers = ["<|im_start|>assistant\n", "<|im_start|>assistant", "<|EOT|><|BOT|>assistant"]
+        assistant_marker_pos = -1
+
+        for marker in assistant_markers:
+            pos = accumulated.rfind(marker)
+            if pos >= 0:
+                assistant_marker_pos = pos + len(marker)
+                break
+
+        # Find end marker
+        end_marker_pos = accumulated.find("<|im_end|>", assistant_marker_pos) if assistant_marker_pos >= 0 else -1
+        if end_marker_pos < 0:
+            # WAR: TODO: hardcoded for now
+            end_marker_pos = accumulated.find("<|BOT|>assistant\n<think>", assistant_marker_pos)
+
+        prefix_start_idx = None
+        prefix_end_idx = None
+
+        if assistant_marker_pos >= 0:
+            char_count = 0
+            for i, t in enumerate(token_sequence):
+                if t["token"] is not None:
+                    token_start = char_count
+                    token_end = char_count + len(t["token"])
+                    if token_end > assistant_marker_pos and prefix_start_idx is None:
+                        prefix_start_idx = i
+                    if end_marker_pos >= 0:
+                        if token_start < end_marker_pos:
+                            prefix_end_idx = i
+                    else:
+                        prefix_end_idx = i
+                    char_count = token_end
+
+        if prefix_start_idx is None or prefix_end_idx is None:
+            # Fallback: estimate from content length
+            estimated_tokens = len(assistant_content) // 3 + 5
+            valid_positions = [i for i, t in enumerate(token_sequence) if t["logprob_dict"] is not None]
+            if valid_positions:
+                end_positions = valid_positions[-estimated_tokens:] if len(valid_positions) > estimated_tokens else valid_positions  # noqa: E501
+                prefix_start_idx = end_positions[0]
+                prefix_end_idx = end_positions[-1]
+            else:
+                return {"topk_indices": [], "topk_logprobs": [], "actual_ids": [], "actual_tokens": [], "seq_len": 0}
+
+        # Extract tokens in assistant region
+        actual_sequence = []
+        for idx in range(prefix_start_idx, prefix_end_idx + 1):
+            t = token_sequence[idx]
+            if t["logprob_dict"] is None:
+                continue
+            if t["token"] and ("<|" in t["token"] or t["token"].strip() == ""):
+                continue
+            actual_sequence.append({
+                "pos": idx,
+                "token_id": t["token_id"],
+                "token": t["token"],
+                "logprob_dict": t["logprob_dict"]
+            })
+
+        # Extract top-k data
+        topk_indices = []
+        topk_logprobs = []
+        actual_ids = []
+        actual_tokens = []
+
+        for item in actual_sequence:
+            logprob_dict = item["logprob_dict"]
+            sorted_items = sorted(logprob_dict.items(), key=lambda x: x[1]["logprob"], reverse=True)
+
+            pos_indices = [int(tid) for tid, _ in sorted_items]
+            pos_logprobs = [info["logprob"] for _, info in sorted_items]
+
+            topk_indices.append(pos_indices)
+            topk_logprobs.append(pos_logprobs)
+            actual_ids.append(item["token_id"])
+            actual_tokens.append(item["token"])
+
+        return {
+            "topk_indices": topk_indices,
+            "topk_logprobs": topk_logprobs,
+            "actual_ids": actual_ids,
+            "actual_tokens": actual_tokens,
+            "seq_len": len(actual_ids),
+        }
+
+    def _compute_reverse_kl_with_teacher_topk(
+        self,
+        student_logits: torch.Tensor,
+        teacher_topk_indices: torch.Tensor,
+        teacher_topk_logprobs: torch.Tensor,
+        temperature: float = 1.0,
+    ) -> torch.Tensor:
+        """
+        Compute reverse KL divergence using teacher's top-k tokens.
+
+        Args:
+            student_logits: Student model logits [batch, seq_len, vocab_size]
+            teacher_topk_indices: Teacher's top-k token indices [batch, seq_len, top_k]
+            teacher_topk_logprobs: Teacher's top-k logprobs [batch, seq_len, top_k]
+            temperature: Temperature for softening distributions
+
+        Returns:
+            per_token_kl: KL divergence per token [batch, seq_len]
+        """
+        student_logits = student_logits / temperature
+        # Has to clamp the teacher's top-k indices to the student's vocab size
+        student_vocab_size = student_logits.shape[-1]
+        teacher_topk_indices = teacher_topk_indices.clamp(max=student_vocab_size - 1)
+        # Gather student logits at teacher's top-k indices
+        student_topk_logits = torch.gather(student_logits, dim=-1, index=teacher_topk_indices)
+
+        # Compute probabilities over top-k (re-normalized)
+        student_topk_log_probs = F.log_softmax(student_topk_logits, dim=-1)
+        student_topk_probs = F.softmax(student_topk_logits, dim=-1)
+
+        # Teacher logprobs need re-normalization over top-k
+        teacher_topk_log_probs = F.log_softmax(teacher_topk_logprobs, dim=-1)
+
+        # KL(student || teacher)
+        per_token_kl = (student_topk_probs * (student_topk_log_probs - teacher_topk_log_probs)).sum(dim=-1)
+
+        return per_token_kl
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        """
+        Compute on-policy knowledge distillation loss with remote teacher.
+
+        Training flow:
+        1. Student generates completions (on-policy sampling)
+        2. Call teacher API to get top-k logprobs for student's completions
+        3. Student learns to match teacher's distribution via KL divergence
+        """
+        meta_data = inputs.pop("meta_data")
+        solutions, original_prompts, audios = meta_data
+
+        # Step 1: Generate completions from student model
+        generated_strs, generated_ids, generated_mask = self._rollout(model, inputs)
+
+        # Compute rewards for monitoring
+        rewards_per_func = self._compute_rewards(generated_strs, meta_data)
+
+        device = self.accelerator.device
+        batch_size = len(generated_strs)
+        student_prompt_length = inputs["input_ids"].size(1)
+
+        # Process each sample
+        all_losses = []
+        all_kl_values = []
+
+        for batch_idx in range(batch_size):
+            original_prompt = original_prompts[batch_idx]
+            audio_array = audios[batch_idx]
+            answer_text = generated_strs[batch_idx]
+
+            if not answer_text.strip():
+                # Skip empty generations
+                continue
+
+            try:
+                # Step 2: Call teacher API
+                prompt = self._build_prompt_from_meta(original_prompt)
+                teacher_data = self._call_teacher_api(
+                    prompt=prompt,
+                    audio_array=audio_array,
+                    answer_text=answer_text,
+                    top_k=self.topk_logits_k or 64,
+                    sample_rate=16000,
+                )
+
+                if teacher_data["seq_len"] == 0:
+                    continue
+
+                teacher_actual_ids = teacher_data["actual_ids"]
+                teacher_seq_len = teacher_data["seq_len"]
+
+                # Step 3: Build student input using teacher's actual_ids
+                prompt_ids = inputs["input_ids"][batch_idx:batch_idx+1]
+                completion_ids = torch.tensor([teacher_actual_ids], dtype=torch.long, device=device)
+                prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
+
+                prompt_mask = inputs["attention_mask"][batch_idx:batch_idx+1]
+                completion_mask = torch.ones_like(completion_ids)
+                attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
+
+                student_inputs = {
+                    "input_ids": prompt_completion_ids,
+                    "attention_mask": attention_mask,
+                    "input_features": inputs["input_features"][batch_idx:batch_idx+1],
+                    "feature_attention_mask": inputs["feature_attention_mask"][batch_idx:batch_idx+1],
+                }
+
+                # Compute student logits
+                student_logits = self._get_per_token_logits(model, student_inputs)
+                student_completion_logits = student_logits[:, student_prompt_length - 1:student_prompt_length - 1 + teacher_seq_len, :]  # noqa: E501
+
+                # Prepare teacher top-k data
+                raw_topk_indices = teacher_data["topk_indices"]
+                raw_topk_logprobs = teacher_data["topk_logprobs"]
+
+                # Pad to consistent length
+                max_topk_len = max(len(row) for row in raw_topk_indices) if raw_topk_indices else 0
+                padded_indices = []
+                padded_logprobs = []
+                for indices_row, logprobs_row in zip(raw_topk_indices, raw_topk_logprobs):
+                    pad_len = max_topk_len - len(indices_row)
+                    padded_indices.append(indices_row + [0] * pad_len)
+                    padded_logprobs.append(logprobs_row + [-100.0] * pad_len)
+
+                teacher_topk_indices = torch.tensor(padded_indices, dtype=torch.long, device=device).unsqueeze(0)
+                teacher_topk_logprobs = torch.tensor(padded_logprobs, dtype=torch.float32, device=device).unsqueeze(0)
+
+                # Step 4: Compute KL divergence
+                per_token_kl = self._compute_reverse_kl_with_teacher_topk(
+                    student_logits=student_completion_logits,
+                    teacher_topk_indices=teacher_topk_indices,
+                    teacher_topk_logprobs=teacher_topk_logprobs,
+                    temperature=1.0,
+                )
+
+                sample_loss = per_token_kl.mean()
+                all_losses.append(sample_loss)
+                all_kl_values.append(per_token_kl.mean().item())
+
+            except Exception as e:
+                logging.warning(f"Error processing sample {batch_idx}: {e}")
+                continue
+
+        if not all_losses:
+            # Return zero loss if all samples failed
+            return torch.tensor(0.0, device=device, requires_grad=True)
+
+        # Average loss across samples
+        loss = torch.stack(all_losses).mean()
+
+        # Log metrics
+        self._metrics["kl"].append(sum(all_kl_values) / len(all_kl_values) if all_kl_values else 0.0)
+        self._metrics["loss"].append(loss.item())
+        self._metrics["completion_length"].append(generated_mask.sum(1).float().mean().item())
+
+        if rewards_per_func is not None:
+            total_rewards = rewards_per_func.sum(dim=1)
+            self._metrics["reward"].append(total_rewards.mean().item())
+            self._metrics["reward_min"].append(total_rewards.min().item())
+            self._metrics["reward_max"].append(total_rewards.max().item())
+            for i, reward_func in enumerate(self.reward_funcs):
+                func_name = reward_func.__name__
+                func_rewards = rewards_per_func[:, i]
+                self._metrics[f"rewards/{func_name}"].append(func_rewards.mean().item())
+                self._metrics[f"rewards/{func_name}_min"].append(func_rewards.min().item())
+                self._metrics[f"rewards/{func_name}_max"].append(func_rewards.max().item())
+
+        return loss
