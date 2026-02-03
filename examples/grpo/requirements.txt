@@ -1,0 +1,9 @@
+soundfile
+transformers>=4.55.0
+deepspeed
+trl
+wandb
+tabulate
+tensorboardX
+datasets==3.1.0
+vllm
