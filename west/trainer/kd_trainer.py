@@ -497,7 +497,6 @@ class KnowledgeDistillationTrainer(Trainer):
             for i, reward_func in enumerate(self.reward_funcs):
                 func_name = reward_func.__name__
                 gathered_rewards = self.accelerator.gather_for_metrics(rewards_per_func[:, i])
-                print(f"gathered_rewards: {gathered_rewards}", f"func_name: {func_name}", "*"*100)
                 self._metrics[f"rewards/{func_name}"].append(gathered_rewards.mean().item())
                 self._metrics[f"rewards/{func_name}_min"].append(gathered_rewards.min().item())
                 self._metrics[f"rewards/{func_name}_max"].append(gathered_rewards.max().item())
@@ -979,9 +978,9 @@ class RemoteKnowledgeDistillationTrainer(KnowledgeDistillationTrainer):
         batch_size = len(generated_strs)
         student_prompt_length = inputs["input_ids"].size(1)
 
-        # Process each sample
-        all_losses = []
-        all_kl_values = []
+        # Collect all per_token_kl and masks for batched computation
+        all_per_token_kl = []  # List of [1, seq_len] tensors
+        all_masks = []         # List of [1, seq_len] tensors
 
         for batch_idx in range(batch_size):
             original_prompt = original_prompts[batch_idx]
@@ -1015,8 +1014,8 @@ class RemoteKnowledgeDistillationTrainer(KnowledgeDistillationTrainer):
                 prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
 
                 prompt_mask = inputs["attention_mask"][batch_idx:batch_idx+1]
-                completion_mask = torch.ones_like(completion_ids)
-                attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
+                completion_mask = torch.ones_like(completion_ids, dtype=torch.float32)
+                attention_mask = torch.cat([prompt_mask, completion_mask.long()], dim=1)
 
                 student_inputs = {
                     "input_ids": prompt_completion_ids,
@@ -1053,36 +1052,37 @@ class RemoteKnowledgeDistillationTrainer(KnowledgeDistillationTrainer):
                     temperature=1.0,
                 )
 
-                sample_loss = per_token_kl.mean()
-                all_losses.append(sample_loss)
-                all_kl_values.append(per_token_kl.mean().item())
+                all_per_token_kl.append(per_token_kl)  # [1, seq_len]
+                all_masks.append(completion_mask)      # [1, seq_len]
 
             except Exception as e:
                 logging.warning(f"Error processing sample {batch_idx}: {e}")
                 continue
 
-        if not all_losses:
+        if not all_per_token_kl:
             # Return zero loss if all samples failed
             return torch.tensor(0.0, device=device, requires_grad=True)
 
-        # Average loss across samples
-        loss = torch.stack(all_losses).mean()
+        # Pad sequences to same length for batched computation
+        max_len = max(t.size(1) for t in all_per_token_kl)
+        padded_kl = []
+        padded_masks = []
+        for kl, mask in zip(all_per_token_kl, all_masks):
+            pad_len = max_len - kl.size(1)
+            if pad_len > 0:
+                kl = F.pad(kl, (0, pad_len), value=0)
+                mask = F.pad(mask, (0, pad_len), value=0)
+            padded_kl.append(kl)
+            padded_masks.append(mask)
 
-        # Log metrics
-        self._metrics["kl"].append(sum(all_kl_values) / len(all_kl_values) if all_kl_values else 0.0)
-        self._metrics["loss"].append(loss.item())
-        self._metrics["completion_length"].append(generated_mask.sum(1).float().mean().item())
+        per_token_kl = torch.cat(padded_kl, dim=0)       # [batch, max_len]
+        completion_mask = torch.cat(padded_masks, dim=0)  # [batch, max_len]
 
-        if rewards_per_func is not None:
-            total_rewards = rewards_per_func.sum(dim=1)
-            self._metrics["reward"].append(total_rewards.mean().item())
-            self._metrics["reward_min"].append(total_rewards.min().item())
-            self._metrics["reward_max"].append(total_rewards.max().item())
-            for i, reward_func in enumerate(self.reward_funcs):
-                func_name = reward_func.__name__
-                func_rewards = rewards_per_func[:, i]
-                self._metrics[f"rewards/{func_name}"].append(func_rewards.mean().item())
-                self._metrics[f"rewards/{func_name}_min"].append(func_rewards.min().item())
-                self._metrics[f"rewards/{func_name}_max"].append(func_rewards.max().item())
+        # Consistent loss calculation with masking (same as parent class)
+        loss = ((per_token_kl * completion_mask).sum(dim=1) /
+                completion_mask.sum(dim=1).clamp(min=1)).mean()
+
+        # Reuse _log_metrics from parent class
+        self._log_metrics(completion_mask, per_token_kl, loss, rewards_per_func)
 
         return loss
