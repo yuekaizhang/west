@@ -446,7 +446,8 @@ class KnowledgeDistillationTrainer(Trainer):
 
         Args:
             generated_strs: List of generated completion strings
-            meta_data: Tuple of (solutions, original_prompts, audios)
+            meta_data: Tuple of (solutions, prompts, audios, ..., questions, choices)
+                       questions and choices are always at the last two positions
 
         Returns:
             rewards_per_func: Rewards from each reward function [num_samples, num_funcs]
@@ -456,7 +457,21 @@ class KnowledgeDistillationTrainer(Trainer):
             return None
 
         solutions = meta_data[0]
+        questions = meta_data[-2]  # questions is at second to last position
+        choices_list = meta_data[-1]  # choices is at last position
+
+        # Expand solutions for num_generations
         solutions_expanded = [s for s in solutions for _ in range(self.num_generations)]
+
+        # Build prompt_question_list from questions and choices
+        # Format: "Question: {question}\nOptions:\n{choice1}\n{choice2}\n..."
+        prompt_question_list = []
+        for question, choices in zip(questions, choices_list):
+            options_str = "\n".join(choices)
+            prompt_question = f"Question: {question}\nOptions:\n{options_str}"
+            # Expand for num_generations
+            for _ in range(self.num_generations):
+                prompt_question_list.append(prompt_question)
 
         device = self.accelerator.device
         rewards_per_func = torch.zeros(len(solutions_expanded), len(self.reward_funcs), device=device)
@@ -464,6 +479,7 @@ class KnowledgeDistillationTrainer(Trainer):
             rewards = reward_func(
                 hypos_list=generated_strs,
                 ground_truth_list=solutions_expanded,
+                prompt_question_list=prompt_question_list,
             )
             rewards_per_func[:, i] = torch.tensor(rewards, dtype=torch.float32, device=device)
 
@@ -741,6 +757,9 @@ class RemoteKnowledgeDistillationTrainer(KnowledgeDistillationTrainer):
         """
         audio_base64 = self._encode_audio_to_base64(audio_array, sample_rate)
 
+        # Check if teacher model is Qwen3-Omni-30B-A3B-Captioner (audio-only input)
+        is_qwen_omni3_captioner = self.teacher_model_name == "Qwen3-Omni-30B-A3B-Captioner"
+
         # Build messages
         messages = []
         for msg in prompt:
@@ -754,12 +773,18 @@ class RemoteKnowledgeDistillationTrainer(KnowledgeDistillationTrainer):
                             "input_audio": {"data": audio_base64, "format": "wav"}
                         })
                     elif item.get("type") == "text":
-                        new_content.append({"type": "text", "text": item.get("text", "")})
+                        # Skip text content for Qwen3-Omni-30B-A3B-Captioner model
+                        if not is_qwen_omni3_captioner:
+                            new_content.append({"type": "text", "text": item.get("text", "")})
                     else:
                         new_content.append(item)
                 new_msg["content"] = new_content
             else:
-                new_msg["content"] = msg.get("content", "")
+                # For non-list content, skip if captioner model
+                if not is_qwen_omni3_captioner:
+                    new_msg["content"] = msg.get("content", "")
+                else:
+                    new_msg["content"] = []
             messages.append(new_msg)
 
         # Append assistant message with answer_text
@@ -966,7 +991,7 @@ class RemoteKnowledgeDistillationTrainer(KnowledgeDistillationTrainer):
         3. Student learns to match teacher's distribution via KL divergence
         """
         meta_data = inputs.pop("meta_data")
-        solutions, original_prompts, audios = meta_data
+        original_prompts, audios = meta_data[1], meta_data[2]
 
         # Step 1: Generate completions from student model
         generated_strs, generated_ids, generated_mask = self._rollout(model, inputs)

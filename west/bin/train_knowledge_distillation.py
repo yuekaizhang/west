@@ -19,8 +19,9 @@ from west.dataset.hf_dataset import HFAudioDataset
 from west.trainer.kd_trainer import (KnowledgeDistillationTrainer,
                                      RemoteKnowledgeDistillationTrainer)
 from west.utils.constants import TEMPLATE_MAP
-from west.utils.rewards import (accuracy_reward, format_reward_answer,
-                                format_reward_think)
+from west.utils.rewards import (accuracy_reward,
+                                caption_llm_cascaded_qa_reward,
+                                format_reward_answer, format_reward_think)
 
 
 def is_url(path: str) -> bool:
@@ -209,6 +210,8 @@ def main():
         reward_funcs = [accuracy_reward, format_reward_answer]
     elif args.template == "think":
         reward_funcs = [accuracy_reward, format_reward_answer, format_reward_think]
+    elif args.template == "caption":
+        reward_funcs = [caption_llm_cascaded_qa_reward]
     else:
         raise ValueError(f"Template {args.template} not supported")
 

@@ -82,6 +82,8 @@ def _handle_hf_item_avqa(item, sample_rate=16000, prompt_template=TEMPLATE_MAP["
         "audio": audio,
         "prompt": prompt,
         "solution": answer,
+        "question": question,
+        "choices": choices,
     }
 
 
@@ -139,6 +141,8 @@ def _handle_hf_item_mmsu(
         "solution": solution,
         "key": item['key'],
         "category": item['category'],
+        "question": question,
+        "choices": options,
     }
 
 
@@ -201,6 +205,8 @@ class HFAudioDataset(Dataset):
         """
         # Extract raw data (needed for reward functions)
         prompts = [item["prompt"] for item in batch]
+        questions = [item["question"] for item in batch]
+        choices = [item["choices"] for item in batch]
         # Apply chat template to get text prompts
         prompts_text = [
             self.processor.apply_chat_template(
@@ -236,9 +242,9 @@ class HFAudioDataset(Dataset):
         if self.is_mmsu:
             keys = [item["key"] for item in batch]
             categories = [item["category"] for item in batch]
-            meta_data = [solutions, prompts, audios, keys, categories]
+            meta_data = [solutions, prompts, audios, keys, categories, questions, choices]
         else:
-            meta_data = [solutions, prompts, audios]
+            meta_data = [solutions, prompts, audios, questions, choices]
 
         return {
             # Tensor inputs for model
