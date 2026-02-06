@@ -21,7 +21,8 @@ from west.trainer.kd_trainer import (KnowledgeDistillationTrainer,
 from west.utils.constants import TEMPLATE_MAP
 from west.utils.rewards import (accuracy_reward,
                                 caption_llm_cascaded_qa_reward,
-                                format_reward_answer, format_reward_think)
+                                format_reward_answer, format_reward_think,
+                                format_reward_think_end)
 
 
 def is_url(path: str) -> bool:
@@ -142,6 +143,10 @@ class CustomTrainingArguments(TrainingArguments):
         default=True,
         metadata={"help": "Use bfloat16 precision"},
     )
+    num_generations: int = field(
+        default=1,
+        metadata={"help": "Number of generations per prompt for rollout"},
+    )
 
 
 def main():
@@ -152,7 +157,7 @@ def main():
         args.report_to = ["wandb"] if args.use_wandb == "true" else []
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    logging.disable(logging.WARNING)
+    # logging.disable(logging.WARNING)
     logging.info(f"Training arguments: {args}")
 
     logging.info(f"Loading model from: {args.model_name_or_path}")
@@ -211,7 +216,7 @@ def main():
     elif args.template == "think":
         reward_funcs = [accuracy_reward, format_reward_answer, format_reward_think]
     elif args.template == "caption":
-        reward_funcs = [caption_llm_cascaded_qa_reward]
+        reward_funcs = [caption_llm_cascaded_qa_reward, format_reward_think_end]
     else:
         raise ValueError(f"Template {args.template} not supported")
 

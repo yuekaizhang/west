@@ -68,7 +68,15 @@ def format_reward_think(hypos_list, **kwargs):
     return [1.0 if len(match) == 1 else 0.0 for match in matches]
 
 
-# ==================== LLM-based Reward Functions ====================
+def format_reward_think_end(hypos_list, **kwargs):
+    """
+    Reward function that specifically for Step-Audio-R1.1, check if </think> in the completion (exactly once).
+    """
+    pattern = r"</think>"
+    completion_contents = [hypo for hypo in hypos_list]
+    matches = [re.findall(pattern, content, re.DOTALL) for content in completion_contents]
+    return [1.0 if len(match) == 1 else 0.0 for match in matches]
+
 
 CAPTION_QA_SYSTEM_PROMPT = """You are an expert audio analyst. Based on a detailed audio caption, you need to answer questions about the audio content by selecting the most appropriate option."""  # NOQA: E501
 

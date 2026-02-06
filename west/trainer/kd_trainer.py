@@ -663,7 +663,7 @@ class RemoteKnowledgeDistillationTrainer(KnowledgeDistillationTrainer):
 
         set_seed(args.seed, device_specific=True)
 
-        self.num_generations = 1
+        self.num_generations = args.num_generations
         self.topk_logits_k = args.topk_logits_k
 
         if reward_funcs is not None:
@@ -691,6 +691,7 @@ class RemoteKnowledgeDistillationTrainer(KnowledgeDistillationTrainer):
         # No local teacher model
         self.teacher_model = None
         self.teacher_model_processor = None
+        self.is_step_audio_think_mode = self.teacher_model_name == "Step-Audio-R1.1"
 
     def _get_teacher_model_name(self) -> str:
         """Get the teacher model name from the API."""
@@ -788,7 +789,11 @@ class RemoteKnowledgeDistillationTrainer(KnowledgeDistillationTrainer):
             messages.append(new_msg)
 
         # Append assistant message with answer_text
-        messages.append({"role": "assistant", "content": answer_text})
+        if self.is_step_audio_think_mode:
+            # For Step-Audio-R1.1, prompt with <think>\n or without <think>\n are two different distributions.
+            messages.append({"role": "assistant", "content": "<think>\n" + answer_text})
+        else:
+            messages.append({"role": "assistant", "content": answer_text})
 
         # Build payload
         payload = {
@@ -858,7 +863,11 @@ class RemoteKnowledgeDistillationTrainer(KnowledgeDistillationTrainer):
         # Find assistant content by marker
         accumulated = "".join([t["token"] for t in token_sequence if t["token"]])
         # TODO: fix me: the assistant marker is hardcoded, should be configurable
-        assistant_markers = ["<|im_start|>assistant\n", "<|im_start|>assistant", "<|EOT|><|BOT|>assistant"]
+        assistant_markers = ["<|im_start|>assistant\n", "<|im_start|>assistant"]
+        if self.is_step_audio_think_mode:
+            assistant_markers.append("<|EOT|><|BOT|>assistant\n<think>\n")
+        else:
+            assistant_markers.append("<|EOT|><|BOT|>assistant")
         assistant_marker_pos = -1
 
         for marker in assistant_markers:
@@ -943,6 +952,56 @@ class RemoteKnowledgeDistillationTrainer(KnowledgeDistillationTrainer):
             "seq_len": len(actual_ids),
         }
 
+    def _filter_rollout_with_rewards(
+        self,
+        generated_strs: list[str],
+        generated_ids: torch.Tensor,
+        generated_mask: torch.Tensor,
+        rewards_per_func: Optional[torch.Tensor],
+    ) -> tuple[list[str], torch.Tensor, torch.Tensor]:
+        """Filter rollout results to keep only the best hypothesis per sample.
+
+        For each original sample in the batch, select the generation with the
+        highest total reward. If multiple generations have the same highest
+        reward, select the first one.
+
+        Args:
+            generated_strs: List of generated strings [batch * num_generations]
+            generated_ids: Tensor of generated token ids [batch * num_generations, seq_len]
+            generated_mask: Mask for valid generated tokens [batch * num_generations, seq_len]
+            rewards_per_func: Rewards from each reward function [batch * num_generations, num_funcs]
+                             or None if no reward functions
+
+        Returns:
+            Filtered (generated_strs, generated_ids, generated_mask) with shape [batch, ...]
+        """
+        if rewards_per_func is None or self.num_generations == 1:
+            return generated_strs, generated_ids, generated_mask
+
+        # Compute total rewards by summing across all reward functions
+        total_rewards = rewards_per_func.sum(dim=1)  # [batch * num_generations]
+
+        # Reshape to [batch, num_generations]
+        batch_size = len(generated_strs) // self.num_generations
+        total_rewards_reshaped = total_rewards.view(batch_size, self.num_generations)
+
+        # Find the index of the best hypothesis for each sample
+        # argmax returns the first index in case of ties
+        best_indices = total_rewards_reshaped.argmax(dim=1)  # [batch]
+
+        # Compute absolute indices into the flattened arrays
+        batch_indices = torch.arange(batch_size, device=best_indices.device)
+        absolute_indices = batch_indices * self.num_generations + best_indices
+
+        # Filter generated_strs
+        filtered_strs = [generated_strs[idx.item()] for idx in absolute_indices]
+
+        # Filter generated_ids and generated_mask
+        filtered_ids = generated_ids[absolute_indices]
+        filtered_mask = generated_mask[absolute_indices]
+
+        return filtered_strs, filtered_ids, filtered_mask
+
     def _compute_reverse_kl_with_teacher_topk(
         self,
         student_logits: torch.Tensor,
@@ -998,6 +1057,9 @@ class RemoteKnowledgeDistillationTrainer(KnowledgeDistillationTrainer):
 
         # Compute rewards for monitoring
         rewards_per_func = self._compute_rewards(generated_strs, meta_data)
+
+        if self.num_generations > 1:
+            generated_strs, generated_ids, generated_mask = self._filter_rollout_with_rewards(generated_strs, generated_ids, generated_mask, rewards_per_func)  # noqa: E501
 
         device = self.accelerator.device
         batch_size = len(generated_strs)
@@ -1109,5 +1171,4 @@ class RemoteKnowledgeDistillationTrainer(KnowledgeDistillationTrainer):
 
         # Reuse _log_metrics from parent class
         self._log_metrics(completion_mask, per_token_kl, loss, rewards_per_func)
-
         return loss
